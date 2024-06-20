@@ -1,0 +1,2508 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-04-09"
+editor_options: 
+  chunk_output_type: console
+---
+
+#Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Packages
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(devtools)
+devtools::install_github("abresler/nbastatR")
+library(nbastatR)
+library(extrafont)
+library(cowplot)
+devtools::install_github(repo = "JackLich10/gamezoneR")
+library(gamezoneR)
+library(sportyR)
+library(KernSmooth)
+library(LaplacesDemon)
+library(dplyr)
+library(ggthemes)
+library(DT)
+```
+
+#Court Creation (for Data Collection)
+```{r}
+# Creating court and plotting
+circle_points = function(center = c(0, 0), radius = 1, npoints = 360) {
+  angles = seq(0, 2 * pi, length.out = npoints)
+  return(data_frame(x = center[1] + radius * cos(angles),
+                    y = center[2] + radius * sin(angles)))
+}
+# Court Dimenons & lines
+width = 50
+height = 94 / 2
+key_height = 19
+inner_key_width = 12
+outer_key_width = 16
+backboard_width = 6
+backboard_offset = 4
+neck_length = 0.5
+hoop_radius = 0.75
+hoop_center_y = backboard_offset + neck_length + hoop_radius
+three_point_radius = 23.75
+three_point_side_radius = 22
+three_point_side_height = 14
+# Court themes
+court_themes = list(
+  light = list(
+    court = 'floralwhite',
+    lines = '#999999',
+    text = '#222222',
+    made = '#00bfc4',
+    missed = '#f8766d',
+    hex_border_size = 1,
+    hex_border_color = "#000000"
+  ),
+  dark = list(
+    court = '#000004',
+    lines = '#999999',
+    text = '#f0f0f0',
+    made = '#00bfc4',
+    missed = '#f8766d',
+    hex_border_size = 0,
+    hex_border_color = "#000000"
+  ),
+  ppt = list(
+    court = 'gray20',
+    lines = 'white',
+    text = '#f0f0f0',
+    made = '#00bfc4',
+    missed = '#f8766d',
+    hex_border_size = 0,
+    hex_border_color = "gray20"
+)
+)
+# Function to create court based on given dimensions
+plot_court = function(court_theme = court_themes$light, use_short_three = FALSE) {
+  if (use_short_three) {
+    three_point_radius = 22
+    three_point_side_height = 0
+  }
+  
+  court_points = data_frame(
+    x = c(width / 2, width / 2, -width / 2, -width / 2, width / 2),
+    y = c(height, 0, 0, height, height),
+    desc = "perimeter"
+  )
+  
+  court_points = bind_rows(court_points , data_frame(
+    x = c(outer_key_width / 2, outer_key_width / 2, -outer_key_width / 2, -outer_key_width / 2),
+    y = c(0, key_height, key_height, 0),
+    desc = "outer_key"
+  ))
+  
+  court_points = bind_rows(court_points , data_frame(
+    x = c(-backboard_width / 2, backboard_width / 2),
+    y = c(backboard_offset, backboard_offset),
+    desc = "backboard"
+  ))
+  
+  court_points = bind_rows(court_points , data_frame(
+    x = c(0, 0), y = c(backboard_offset, backboard_offset + neck_length), desc = "neck"
+  ))
+  
+  foul_circle = circle_points(center = c(0, key_height), radius = inner_key_width / 2)
+  
+  foul_circle_top = filter(foul_circle, y > key_height) %>%
+    mutate(desc = "foul_circle_top")
+  
+  foul_circle_bottom = filter(foul_circle, y < key_height) %>%
+    mutate(
+      angle = atan((y - key_height) / x) * 180 / pi,
+      angle_group = floor((angle - 5.625) / 11.25),
+      desc = paste0("foul_circle_bottom_", angle_group)
+    ) %>%
+    filter(angle_group %% 2 == 0) %>%
+    select(x, y, desc)
+  
+  hoop = circle_points(center = c(0, hoop_center_y), radius = hoop_radius) %>%
+    mutate(desc = "hoop")
+  
+  restricted = circle_points(center = c(0, hoop_center_y), radius = 4) %>%
+    filter(y >= hoop_center_y) %>%
+    mutate(desc = "restricted")
+  
+  three_point_circle = circle_points(center = c(0, hoop_center_y), radius = three_point_radius) %>%
+    filter(y >= three_point_side_height, y >= hoop_center_y)
+  
+  three_point_line = data_frame(
+    x = c(three_point_side_radius, three_point_side_radius, three_point_circle$x, -three_point_side_radius, -three_point_side_radius),
+    y = c(0, three_point_side_height, three_point_circle$y, three_point_side_height, 0),
+    desc = "three_point_line"
+  )
+  
+  court_points = bind_rows(
+    court_points,
+    foul_circle_top,
+    foul_circle_bottom,
+    hoop,
+    restricted,
+    three_point_line
+  )
+  
+  
+  court_points <- court_points
+  
+  # Final plot creation
+  ggplot() +
+    geom_path(
+      data = court_points,
+      aes(x = x, y = y, group = desc),
+      color = court_theme$lines
+    ) +
+    coord_fixed(ylim = c(0, 45), xlim = c(-25, 25)) +
+    theme_minimal(base_size = 22) +
+    theme(
+      text = element_text(color = court_theme$text),
+      plot.background = element_rect(fill = 'gray20', color = 'gray20'),
+      panel.background = element_rect(fill = court_theme$court, color = court_theme$court),
+      panel.grid = element_blank(),
+      panel.border = element_blank(),
+      axis.text = element_blank(),
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+      legend.background = element_rect(fill = court_theme$court, color = court_theme$court),
+      legend.margin = margin(-1, 0, 0, 0, unit = "lines"),
+      legend.position = "bottom",
+      legend.key = element_blank(),
+      legend.text = element_text(size = rel(1.0))
+    )
+}
+```
+
+
+#NBA Data Collection
+##Atlanta Hawks
+```{r}
+hoop_center_y = 5.25
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+atlanta <- teams_shots(teams = "Atlanta Hawks", seasons = 2023, season_types = "Regular Season")
+atlanta <- atlanta %>% arrange(namePlayer)
+atlanta <- atlanta %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+atlanta$x <- atlanta$x * -1 
+```
+
+##Boston Celtics
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+boston <- teams_shots(teams = "Boston Celtics", seasons = 2023, season_types = "Regular Season")
+boston <- boston %>% arrange(namePlayer)
+boston <- boston %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+boston$x <- boston$x * -1 
+```
+
+##Brooklyn Nets
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+brooklyn <- teams_shots(teams = "Brooklyn Nets", seasons = 2023, season_types = "Regular Season")
+brooklyn <- brooklyn %>% arrange(namePlayer)
+brooklyn <- brooklyn %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+brooklyn$x <- brooklyn$x * -1 
+```
+
+##Charlotte Hornets
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+charlotte <- teams_shots(teams = "Charlotte Hornets", seasons = 2023, season_types = "Regular Season")
+charlotte <- charlotte %>% arrange(namePlayer)
+charlotte <- charlotte %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+charlotte$x <- charlotte$x * -1 
+```
+
+##Chicago Bulls
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+chicago <- teams_shots(teams = "Chicago Bulls", seasons = 2023, season_types = "Regular Season")
+chicago <- chicago %>% arrange(namePlayer)
+chicago <- chicago %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+chicago$x <- chicago$x * -1 
+```
+
+##Cleveland Cavaliers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+cleveland <- teams_shots(teams = "Cleveland Cavaliers", seasons = 2023, season_types = "Regular Season")
+cleveland <- cleveland %>% arrange(namePlayer)
+cleveland <- cleveland %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+cleveland$x <- cleveland$x * -1 
+```
+
+##Dallas Mavericks
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+dallas <- teams_shots(teams = "Dallas Mavericks", seasons = 2023, season_types = "Regular Season")
+dallas <- dallas %>% arrange(namePlayer)
+dallas <- dallas %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+dallas$x <- dallas$x * -1 
+```
+
+##Denver Nuggets
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+denver <- teams_shots(teams = "Denver Nuggets", seasons = 2023, season_types = "Regular Season")
+denver <- denver %>% arrange(namePlayer)
+denver <- denver %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+denver$x <- denver$x * -1 
+```
+
+##Detroit Pistons
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+detroit <- teams_shots(teams = "Detroit Pistons", seasons = 2023, season_types = "Regular Season")
+detroit <- detroit %>% arrange(namePlayer)
+detroit <- detroit %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+detroit$x <- detroit$x * -1 
+```
+
+##Golden State Warriors
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+golden_state <- teams_shots(teams = "Golden State Warriors", seasons = 2023, season_types = "Regular Season")
+golden_state <- golden_state %>% arrange(namePlayer)
+golden_state <- golden_state %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+golden_state$x <- golden_state$x * -1 
+```
+
+##Houston Rockets
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+houston <- teams_shots(teams = "Houston Rockets", seasons = 2023, season_types = "Regular Season")
+houston <- houston %>% arrange(namePlayer)
+houston <- houston %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+houston$x <- houston$x * -1 
+```
+
+##Indiana Pacers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+indiana <- teams_shots(teams = "Indiana Pacers", seasons = 2023, season_types = "Regular Season")
+indiana <- indiana %>% arrange(namePlayer)
+indiana <- indiana %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+indiana$x <- indiana$x * -1 
+```
+
+##Los Angeles Clippers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+los_angeles_c <- teams_shots(teams = "Los Angeles Clippers", seasons = 2023, season_types = "Regular Season")
+los_angeles_c <- los_angeles_c %>% arrange(namePlayer)
+los_angeles_c <- los_angeles_c %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+los_angeles_c$x <- los_angeles_c$x * -1 
+```
+
+##Los Angeles Lakers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+los_angeles_l <- teams_shots(teams = "Los Angeles Lakers", seasons = 2023, season_types = "Regular Season")
+los_angeles_l <- los_angeles_l %>% arrange(namePlayer)
+los_angeles_l <- los_angeles_l %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+los_angeles_l$x <- los_angeles_l$x * -1 
+```
+
+##Memphis Grizzlies
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+memphis <- teams_shots(teams = "Memphis Grizzlies", seasons = 2023, season_types = "Regular Season")
+memphis <- memphis %>% arrange(namePlayer)
+memphis <- memphis %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+memphis$x <- memphis$x * -1 
+```
+
+##Miami Heat
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+miami <- teams_shots(teams = "Miami Heat", seasons = 2023, season_types = "Regular Season")
+miami <- miami %>% arrange(namePlayer)
+miami <- miami %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+miami$x <- miami$x * -1 
+```
+
+##Milwaukee Bucks
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+milwaukee <- teams_shots(teams = "Milwaukee Bucks", seasons = 2023, season_types = "Regular Season")
+milwaukee <- milwaukee %>% arrange(namePlayer)
+milwaukee <- milwaukee %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+milwaukee$x <- milwaukee$x * -1 
+```
+
+##Minnesota Timberwolves
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+minnesota <- teams_shots(teams = "Minnesota Timberwolves", seasons = 2023, season_types = "Regular Season")
+minnesota <- minnesota %>% arrange(namePlayer)
+minnesota <- minnesota %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+minnesota$x <- minnesota$x * -1 
+```
+
+##New Orleans Pelicans
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+new_orleans <- teams_shots(teams = "New Orleans Pelicans", seasons = 2023, season_types = "Regular Season")
+new_orleans <- new_orleans %>% arrange(namePlayer)
+new_orleans <- new_orleans %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+new_orleans$x <- new_orleans$x * -1 
+```
+
+##New York Knicks
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+new_york <- teams_shots(teams = "New York Knicks", seasons = 2023, season_types = "Regular Season")
+new_york <- new_york %>% arrange(namePlayer)
+new_york <- new_york %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+new_york$x <- new_york$x * -1 
+```
+
+##Oklahoma City Thunder
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+oklahoma_city <- teams_shots(teams = "Oklahoma City Thunder", seasons = 2023, season_types = "Regular Season")
+oklahoma_city <- oklahoma_city %>% arrange(namePlayer)
+oklahoma_city <- oklahoma_city %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+oklahoma_city$x <- oklahoma_city$x * -1 
+```
+
+##Orlando Magic
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+orlando <- teams_shots(teams = "Orlando Magic", seasons = 2023, season_types = "Regular Season")
+orlando <- orlando %>% arrange(namePlayer)
+orlando <- orlando %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+orlando$x <- orlando$x * -1 
+```
+
+##Philadelphia 76ers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+philadelphia <- teams_shots(teams = "Philadelphia 76ers", seasons = 2023, season_types = "Regular Season")
+philadelphia <- philadelphia %>% arrange(namePlayer)
+philadelphia <- philadelphia %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+philadelphia$x <- philadelphia$x * -1 
+```
+
+##Phoenix Suns
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+phoenix <- teams_shots(teams = "Phoenix Suns", seasons = 2023, season_types = "Regular Season")
+phoenix <- phoenix %>% arrange(namePlayer)
+phoenix <- phoenix %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+phoenix$x <- phoenix$x * -1 
+```
+
+##Portland Trail Blazers
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+portland <- teams_shots(teams = "Portland Trail Blazers", seasons = 2023, season_types = "Regular Season")
+portland <- portland %>% arrange(namePlayer)
+portland <- portland %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+portland$x <- portland$x * -1 
+```
+
+##Sacramento Kings
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+sacramento <- teams_shots(teams = "Sacramento Kings", seasons = 2023, season_types = "Regular Season")
+sacramento <- sacramento %>% arrange(namePlayer)
+sacramento <- sacramento %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+sacramento$x <- sacramento$x * -1 
+```
+
+##San Antonio Spurs
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+san_antonio <- teams_shots(teams = "San Antonio Spurs", seasons = 2023, season_types = "Regular Season")
+san_antonio <- san_antonio %>% arrange(namePlayer)
+san_antonio <- san_antonio %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+san_antonio$x <- san_antonio$x * -1 
+```
+
+##Toronto Raptors
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+toronto <- teams_shots(teams = "Toronto Raptors", seasons = 2023, season_types = "Regular Season")
+toronto <- toronto %>% arrange(namePlayer)
+toronto <- toronto %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+toronto$x <- toronto$x * -1 
+```
+
+##Utah Jazz
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+utah <- teams_shots(teams = "Utah Jazz", seasons = 2023, season_types = "Regular Season")
+utah <- utah %>% arrange(namePlayer)
+utah <- utah %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+utah$x <- utah$x * -1 
+```
+
+##Washington Wizards
+```{r}
+# Fix nba_teams function
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+# Grab team names to type into teams_shots function
+nba_teams() %>% filter(isNonNBATeam == 0)
+# Grab team shot data
+washington <- teams_shots(teams = "Washington Wizards", seasons = 2023, season_types = "Regular Season")
+washington <- washington %>% arrange(namePlayer)
+washington <- washington %>% mutate(x = as.numeric(as.character(locationX)) / 10, y = as.numeric(as.character(locationY)) / 10 + hoop_center_y)
+# Horizontally flip the data
+washington$x <- washington$x * -1 
+```
+
+##NBA Data Bind
+```{r}
+nba <- rbind(atlanta,boston,brooklyn,charlotte,chicago,cleveland,dallas,denver,detroit,golden_state,houston,indiana,los_angeles_c,los_angeles_l,memphis,miami,milwaukee,minnesota,new_orleans,new_york,oklahoma_city,orlando,philadelphia,phoenix,portland,sacramento,san_antonio,toronto,utah,washington)
+```
+
+##NBA Data Adjustments
+```{r}
+nba2 <- nba
+nba2$locationX <- nba2$locationX/10
+nba2$locationY <- nba2$locationY/10
+nba2$locationY <- nba2$locationY - 41.75
+
+# Group by player and summarize with number of attempts
+df_counts <- nba2 %>%
+  group_by(namePlayer) %>%
+  summarize(num_attempts = n()) 
+
+# Filter players with more than 100 attempts
+df_counts_filtered <- df_counts %>%
+  filter(num_attempts > 99)
+
+# Remove the grouping
+df_counts_filtered <- ungroup(df_counts_filtered)
+
+filtered_players <- c(df_counts_filtered$namePlayer)
+
+# Keep only rows for players with more than 100 attempts
+nba2 <- nba2 %>%
+  filter(namePlayer %in% filtered_players)
+
+nba2$courtTeam <- nba2$nameTeam
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Atlanta Hawks", "atlanta_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Boston Celtics", "boston_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Brooklyn Nets", "brooklyn_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Charlotte Hornets", "charlotte_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Chicago Bulls", "chicago_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Cleveland Cavaliers", "cleveland_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Dallas Mavericks", "dallas_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Denver Nuggets", "denver_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Detroit Pistons", "detroit_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Golden State Warriors", "goldenstate_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Houston Rockets", "houston_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Indiana Pacers", "indiana_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "LA Clippers", "losangelesc_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Los Angeles Lakers", "losangelesl_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Memphis Grizzlies", "memphis_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Miami Heat", "miami_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Milwaukee Bucks", "milwaukee_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Minnesota Timberwolves", "minnesota_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "New Orleans Pelicans", "neworleans_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "New York Knicks", "newyork_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Oklahoma City Thunder", "oklahomacity_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Orlando Magic", "orlando_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Philadelphia 76ers", "philadelphia_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Phoenix Suns", "phoenix_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Portland Trail Blazers", "portland_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Sacramento Kings", "sacramento_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "San Antonio Spurs", "sanantonio_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Toronto Raptors", "toronto_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Utah Jazz", "utah_court", nba2$courtTeam)
+nba2$courtTeam <- ifelse(nba2$courtTeam == "Washington Wizards", "washington_court", nba2$courtTeam)
+write_csv(nba2, "nba.csv")
+nba2 <- read_csv("~/Documents/School/Spring 2023/SAL 496/nba.csv")
+```
+
+##NBA Summary Statistics
+```{r}
+my_colors <- c("#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B")
+ggplot(data = nba2, aes(x = zoneBasic, fill = zoneBasic)) +
+  geom_bar() +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "NBA Shots Attempted By Zone") +
+  ylim(0,90000) +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_text(size = 9))
+
+my_colors <- c("#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A","#17408B", "#C9082A")
+ggplot(data = nba2, aes(x = typeAction, fill = typeAction)) +
+  geom_bar() +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "NBA Shots Attempted By Action Type") +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+my_colors <- c("#17408B", "#C9082A")
+ggplot(data = nba2, aes(x = typeEvent, fill = typeEvent)) +
+  geom_bar() +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "NBA Shot Results") +
+  ylim(0,175000) +
+  theme_fivethirtyeight()
+```
+
+#NCAA Data Collection
+```{r}
+schedule <- gamezone_mbb_team_schedule(team = "Alabama", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+brandon_miller_shots <- shots %>% filter(shooter=="Brandon Miller") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Villanova", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+cam_whitmore_shots <- shots %>% filter(shooter=="Cam Whitmore") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Houston", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jarace_walker_shots <- shots %>% filter(shooter=="Jarace Walker") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kentucky", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+cason_wallace_shots <- shots %>% filter(shooter=="Cason Wallace") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UCF", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+taylor_hendricks_shots <- shots %>% filter(shooter=="Taylor Hendricks") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Ohio State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+brice_sensabaugh_shots <- shots %>% filter(shooter=="Brice Sensabaugh") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Arkansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+anthony_black_shots <- shots %>% filter(shooter=="Anthony Black") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+gradey_dick_shots <- shots %>% filter(shooter=="Gradey Dick") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Baylor", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+keyonte_george_shots <- shots %>% filter(shooter=="Keyonte George") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Michigan", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+kobe_bufkin_shots <- shots %>% filter(shooter=="Kobe Bufkin") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Indiana", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jalen_hood_schifino_shots <- shots %>% filter(shooter=="Jalen Hood-Schifino") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Michigan", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jett_howard_shots <- shots %>% filter(shooter=="Jett Howard") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Duke", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+dariq_whitehead_shots <- shots %>% filter(shooter=="Dariq Whitehead") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Arkansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+nick_smith_jr_shots <- shots %>% filter(shooter=="Nick Smith Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Connecticut", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jordan_hawkins_shots <- shots %>% filter(shooter=="Jordan Hawkins") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Pepperdine", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+maxwell_lewis_shots <- shots %>% filter(shooter=="Maxwell Lewis") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Duke", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+dereck_lively_ii_shots <- shots %>% filter(shooter=="Dereck Lively II") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "South Carolina", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+gregory_jackson_shots <- shots %>% filter(shooter=="Gregory Jackson") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Iowa", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+kris_murray_shots <- shots %>% filter(shooter=="Kris Murray") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Xavier", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+colby_jones_shots <- shots %>% filter(shooter=="Colby Jones") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Alabama", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+noah_clowney_shots <- shots %>% filter(shooter=="Noah Clowney") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Gonzaga", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+julian_strawther_shots <- shots %>% filter(shooter=="Julian Strawther") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Arkansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+ricky_council_iv_shots <- shots %>% filter(shooter=="Ricky Council IV") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Houston", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+marcus_sasser_shots <- shots %>% filter(shooter=="Marcus Sasser") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "NC State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+terquavion_smith_shots <- shots %>% filter(shooter=="Terquavion Smith") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Syracuse", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+judah_mintz_shots <- shots %>% filter(shooter=="Judah Mintz") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Indiana", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+trayce_jackson_davis_shots <- shots %>% filter(shooter=="Trayce Jackson-Davis") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Santa Clara", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+brandin_podziemski_shots <- shots %>% filter(shooter=="Brandin Podziemski") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UCLA", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jaime_jaquez_jr_shots <- shots %>% filter(shooter=="Jaime Jaquez Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Arkansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jordan_walsh_shots <- shots %>% filter(shooter=="Jordan Walsh") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Creighton", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+trey_alexander_shots <- shots %>% filter(shooter=="Trey Alexander") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UCLA", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+amari_bailey_shots <- shots %>% filter(shooter=="Amari Bailey") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Connecticut", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+andre_jackson_jr_shots <- shots %>% filter(shooter=="Andre Jackson Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jalen_wilson_shots <- shots %>% filter(shooter=="Jalen Wilson") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "TCU", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+mike_miles_jr_shots <- shots %>% filter(shooter=="Mike Miles Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kansas State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+keyontae_johnson_shots <- shots %>% filter(shooter=="Keyontae Johnson") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Illinois", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+terrence_shannon_jr_shots <- shots %>% filter(shooter=="Terrence Shannon Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Dayton", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+daron_holmes_ii_shots <- shots %>% filter(shooter=="DaRon Holmes II") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Missouri", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+kobe_brown_shots <- shots %>% filter(shooter=="Kobe Brown") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kansas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+kevin_mccullar_jr_shots <- shots %>% filter(shooter=="Kevin McCullar Jr.") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Washington State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+mouhamed_gueye_shots <- shots %>% filter(shooter=="Mouhamed Gueye") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Miami", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jordan_miller_shots <- shots %>% filter(shooter=="Jordan Miller") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UCLA", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jaylen_clark_shots <- shots %>% filter(shooter=="Jaylen Clark") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Virginia", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+reece_beekman_shots <- shots %>% filter(shooter=="Reece Beekman") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UCLA", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+adem_bona_shots <- shots %>% filter(shooter=="Adem Bona") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Purdue", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+zach_edey_shots <- shots %>% filter(shooter=="Zach Edey") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Gonzaga", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+drew_timme_shots <- shots %>% filter(shooter=="Drew Timme") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Illinois", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+coleman_hawkins_shots <- shots %>% filter(shooter=="Coleman Hawkins") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Wake Forest", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+bobi_klintman_shots <- shots %>% filter(shooter=="Bobi Klintman") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kentucky", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jacob_toppin_shots <- shots %>% filter(shooter=="Jacob Toppin") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kansas State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+naeqwan_tomlin_shots <- shots %>% filter(shooter=="Nae'Qwan Tomlin") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Baylor", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+adam_flagler_shots <- shots %>% filter(shooter=="Adam Flagler") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Miami", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+isaiah_wong_shots <- shots %>% filter(shooter=="Isaiah Wong") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Penn State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jalen_pickett_shots <- shots %>% filter(shooter=="Jalen Pickett") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Missouri", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+dmoi_hodge_shots <- shots %>% filter(shooter=="D'Moi Hodge") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UAB", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+eric_gaines_shots <- shots %>% filter(shooter=="Eric Gaines") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "UAB", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jordan_walker_shots <- shots %>% filter(shooter=="Jordan Walker") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Arizona", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+azuolas_tubelis_shots <- shots %>% filter(shooter=="Azuolas Tubelis") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Marquette", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+olivier_maxence_prosper_shots <- shots %>% filter(shooter=="Olivier-Maxence Prosper") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "TCU", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+emanuel_miller_shots <- shots %>% filter(shooter=="Emanuel Miller") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Florida", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+colin_castleton_shots <- shots %>% filter(shooter=="Colin Castleton") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Richmond", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+tyler_burton_shots <- shots %>% filter(shooter=="Tyler Burton") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Ole Miss", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+matthew_murrell_shots <- shots %>% filter(shooter=="Matthew Murrell") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "USC", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+drew_peterson_shots <- shots %>% filter(shooter=="Drew Peterson") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Memphis", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+kendric_davis_shots <- shots %>% filter(shooter=="Kendric Davis") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Detroit Mercy", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+antoine_davis_shots <- shots %>% filter(shooter=="Antoine Davis") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kentucky", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+oscar_tshiebwe_shots <- shots %>% filter(shooter=="Oscar Tshiebwe") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Rutgers", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+clifford_omoruyi_shots <- shots %>% filter(shooter=="Clifford Omoruyi") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Kentucky", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+chris_livingston_shots <- shots %>% filter(shooter=="Chris Livingston") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Texas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+dillon_mitchell_shots <- shots %>% filter(shooter=="Dillon Mitchell") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Creighton", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+ryan_kalkbrenner_shots <- shots %>% filter(shooter=="Ryan Kalkbrenner") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Iowa State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+osun_osunniyi_shots <- shots %>% filter(shooter=="Osun Osunniyi") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Creighton", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+arthur_kaluma_shots <- shots %>% filter(shooter=="Arthur Kaluma") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "North Carolina", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+leaky_black_shots <- shots %>% filter(shooter=="Leaky Black") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Virginia Tech", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+justyn_mutts_shots <- shots %>% filter(shooter=="Justyn Mutts") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Connecticut", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+adama_sanogo_shots <- shots %>% filter(shooter=="Adama Sanogo") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Tulane", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+sion_james_shots <- shots %>% filter(shooter=="Sion James") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Penn State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+seth_lundy_shots <- shots %>% filter(shooter=="Seth Lundy") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Oklahoma", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+grant_sherfield_shots <- shots %>% filter(shooter=="Grant Sherfield") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Cincinnati", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+landers_nolley_ii_shots <- shots %>% filter(shooter=="Landers Nolley II") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Texas", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+tyrese_hunter_shots <- shots %>% filter(shooter=="Tyrese Hunter") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "SMU", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+zhuric_phelps_shots <- shots %>% filter(shooter=="Zhuric Phelps") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Tennessee", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+julian_phillips_shots <- shots %>% filter(shooter=="Julian Phillips") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Houston", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jamal_shead_shots <- shots %>% filter(shooter=="Jamal Shead") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Georgia Tech", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+miles_kelly_shots <- shots %>% filter(shooter=="Miles Kelly") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Florida", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+alex_fudge_shots <- shots %>% filter(shooter=="Alex Fudge") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Vanderbilt", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+liam_robbins_shots <- shots %>% filter(shooter=="Liam Robbins") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Gonzaga", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+anton_watson_shots <- shots %>% filter(shooter=="Anton Watson") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Iowa State", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jaren_holmes_shots <- shots %>% filter(shooter=="Jaren Holmes") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Alabama", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jaden_bradley_shots <- shots %>% filter(shooter=="Jaden Bradley") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Alabama", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+charles_bediako_shots <- shots %>% filter(shooter=="Charles Bediako") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "North Carolina", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+pete_nance_shots <- shots %>% filter(shooter=="Pete Nance") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Tennessee", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+josiah_jordan_james_shots <- shots %>% filter(shooter=="Josiah-Jordan James") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Miami", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+nijel_pack_shots <- shots %>% filter(shooter=="Nijel Pack") %>% mutate(loc_x=loc_x-25)
+
+schedule <- gamezone_mbb_team_schedule(team = "Baylor", season = "2022-23")
+shots <- purrr::map_df(schedule$game_id,gamezoneR::gamezone_mbb_pbp, sub_parse = F)
+jalen_bridges_shots <- shots %>% filter(shooter=="Jalen Bridges") %>% mutate(loc_x=loc_x-25)
+```
+
+##NCAA Data Bind
+```{r}
+ncaa <- rbind(adam_flagler_shots,adama_sanogo_shots,adem_bona_shots,alex_fudge_shots,amari_bailey_shots,andre_jackson_jr_shots,anthony_black_shots,antoine_davis_shots,anton_watson_shots,arthur_kaluma_shots,azuolas_tubelis_shots,bobi_klintman_shots,brandin_podziemski_shots,brandon_miller_shots,brice_sensabaugh_shots,cam_whitmore_shots,cason_wallace_shots,charles_bediako_shots,chris_livingston_shots,clifford_omoruyi_shots,colby_jones_shots,coleman_hawkins_shots,colin_castleton_shots,dariq_whitehead_shots,daron_holmes_ii_shots,dereck_lively_ii_shots,dillon_mitchell_shots,dmoi_hodge_shots,drew_peterson_shots,drew_timme_shots,emanuel_miller_shots,eric_gaines_shots,gradey_dick_shots,grant_sherfield_shots,gregory_jackson_shots,isaiah_wong_shots,jacob_toppin_shots,jaden_bradley_shots,jaime_jaquez_jr_shots,jalen_bridges_shots,jalen_hood_schifino_shots,jalen_pickett_shots,jalen_wilson_shots,jamal_shead_shots,jarace_walker_shots,jaren_holmes_shots,jaylen_clark_shots,jett_howard_shots,jordan_hawkins_shots,jordan_miller_shots,jordan_walker_shots,jordan_walsh_shots,josiah_jordan_james_shots,judah_mintz_shots,julian_phillips_shots,julian_strawther_shots,justyn_mutts_shots,kendric_davis_shots,kevin_mccullar_jr_shots,keyontae_johnson_shots,keyonte_george_shots,kobe_brown_shots,kobe_bufkin_shots,kris_murray_shots,landers_nolley_ii_shots,leaky_black_shots,liam_robbins_shots,marcus_sasser_shots,matthew_murrell_shots,maxwell_lewis_shots,mike_miles_jr_shots,miles_kelly_shots,mouhamed_gueye_shots,naeqwan_tomlin_shots,nick_smith_jr_shots,nijel_pack_shots,noah_clowney_shots,olivier_maxence_prosper_shots,oscar_tshiebwe_shots,osun_osunniyi_shots,pete_nance_shots,reece_beekman_shots,ricky_council_iv_shots,ryan_kalkbrenner_shots,seth_lundy_shots,sion_james_shots,taylor_hendricks_shots,terquavion_smith_shots,terrence_shannon_jr_shots,trayce_jackson_davis_shots,trey_alexander_shots,tyler_burton_shots,tyrese_hunter_shots,zach_edey_shots,zhuric_phelps_shots)
+```
+
+##NCAA Data Adjustments
+```{r}
+ncaa2 <- ncaa
+ncaa2$loc_y <- ncaa2$loc_y + 47
+
+ncaa2 <- ncaa2[, !colnames(ncaa2) %in% "assist"]
+ncaa2 <- ncaa2[, !colnames(ncaa2) %in% "poss_after"]
+
+write_csv(ncaa2,"ncaa.csv")
+```
+
+##NCAA Summary Statistics
+```{r}
+ggplot(data = ncaa2, aes(x = shot_desc)) +
+  geom_bar(fill = "#009EDF") +
+  labs(title = "NCAA Shots Attempted by Description") +
+  theme_fivethirtyeight()
+
+ggplot(data = ncaa2, aes(x = shot_outcome)) +
+  geom_bar(fill = "#009EDF") +
+  labs(title = "NCAA Shot Results") +
+  ylim(0, 25000) +
+  theme_fivethirtyeight()
+```
+
+#NBA Court Creation
+##Base Court
+```{r}
+nba_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense")
+nba_court
+```
+
+##Atlanta Hawks
+```{r}
+atlanta_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F1C7A2",
+                                           offensive_half_court = "#F1C7A2",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F1C7A2",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F1C7A2",
+                                           three_point_line = "#ffffff",
+                                           painted_area = "#C8102E",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#F1C7A2",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#C8102E"))
+atlanta_court
+```
+
+##Boston Celtics
+```{r}
+boston_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E2AE5C",
+                                           offensive_half_court = "#E2AE5C",
+                                           court_apron = "#007A33",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#E2AE5C",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#E2AE5C",
+                                           three_point_line = "#ffffff",
+                                           painted_area = "#007A33",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#E2AE5C",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#007A33"))
+boston_court
+```
+
+##Brooklyn Nets
+```{r}
+brooklyn_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#D4CFC4",
+                                           offensive_half_court = "#D4CFC4",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#D4CFC4",
+                                           division_line = "#000000",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#D4CFC4",
+                                           three_point_line = "#000000",
+                                           painted_area = "#928C83",
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline =
+                                             "#000000",
+                                           free_throw_circle_fill = "#D4CFC4",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#928C83"))
+brooklyn_court
+```
+
+##Charlotte Hornets
+```{r}
+charlotte_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#D6C28B",
+                                           offensive_half_court = "#D6C28B",
+                                           court_apron = "#00788C",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#D6C28B",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#D6C28B",
+                                           three_point_line = "#ffffff",
+                                           painted_area = "#00788C",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#D6C28B",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#00788C"))
+charlotte_court
+```
+
+##Chicago Bulls
+```{r}
+chicago_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F2D9BF",
+                                           offensive_half_court = "#F2D9BF",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#F2D9BF",
+                                           division_line = "#000000",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F2D9BF",
+                                           three_point_line = "#000000",
+                                           painted_area = "#CE1141",
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline =
+                                             "#000000",
+                                           free_throw_circle_fill = "#F2D9BF",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#CE1141"))
+chicago_court
+```
+
+##Cleveland Cavaliers
+```{r}
+cleveland_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E7CA9B",
+                                           offensive_half_court = "#E7CA9B",
+                                           court_apron = "#860038",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#E7CA9B",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#E7CA9B",
+                                           three_point_line = "#860038",
+                                           painted_area = "#860038",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#E7CA9B",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#860038"))
+cleveland_court
+```
+
+##Dallas Mavericks
+```{r}
+dallas_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#C9C9C5",
+                                           offensive_half_court = "#C9C9C5",
+                                           court_apron = "#00538C",
+                                           center_circle_outline = "#002B5E",
+                                           center_circle_fill = "#C9C9C5",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#C9C9C5",
+                                           three_point_line = "#00538C",
+                                           painted_area = "#002B5E",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#00538C",
+                                           free_throw_circle_fill = "#C9C9C5",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#00538C",
+                                           inbounding_line = "#00538C",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#00538C",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#002B5E"))
+dallas_court
+```
+
+##Denver Nuggets
+```{r}
+denver_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F5D2AF",
+                                           offensive_half_court = "#F5D2AF",
+                                           court_apron = "#0E2240",
+                                           center_circle_outline = "#0E2240",
+                                           center_circle_fill = "#F5D2AF",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F5D2AF",
+                                           three_point_line = "#0E2240",
+                                           painted_area = "#F5D2AF",
+                                           lane_boundary = "#8B2131",
+                                           free_throw_circle_outline =
+                                             "#0E2240",
+                                           free_throw_circle_fill = "#F5D2AF",
+                                           free_throw_circle_dash = "#0E2240",
+                                           lane_space_mark = "#0E2240",
+                                           inbounding_line = "#8B2131",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#8B2131",
+                                           lane_lower_defensive_box = "#0E2240",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#0E2240",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#F5D2AF"))
+denver_court
+```
+
+##Detroit Pistons
+```{r}
+detroit_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EEDBB4",
+                                           offensive_half_court = "#EEDBB4",
+                                           court_apron = "#1D42BA",
+                                           center_circle_outline = "#1D42BA",
+                                           center_circle_fill = "#EEDBB4",
+                                           division_line = "#1D42BA",
+                                           endline = "#1D42BA",
+                                           sideline = "#1D42BA",
+                                           two_point_range = "#EEDBB4",
+                                           three_point_line = "#1D42BA",
+                                           painted_area = "#EEDBB4",
+                                           lane_boundary = "#1D42BA",
+                                           free_throw_circle_outline =
+                                             "#1D42BA",
+                                           free_throw_circle_fill = "#EEDBB4",
+                                           free_throw_circle_dash = "#1D42BA",
+                                           lane_space_mark = "#1D42BA",
+                                           inbounding_line = "#1D42BA",
+                                           substitution_line = "#1D42BA",
+                                           baseline_lower_defensive_box =
+                                             "#1D42BA",
+                                           lane_lower_defensive_box = "#1D42BA",
+                                           team_bench_line = "#1D42BA",
+                                           restricted_arc = "#1D42BA",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#EEDBB4"))
+detroit_court
+```
+
+##Golden State Warriors
+```{r}
+goldenstate_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F6D1A0",
+                                           offensive_half_court = "#F6D1A0",
+                                           court_apron = "#FFC72C",
+                                           center_circle_outline = "#1D428A",
+                                           center_circle_fill = "#F6D1A0",
+                                           division_line = "#1D428A",
+                                           endline = "#1D428A",
+                                           sideline = "#1D428A",
+                                           two_point_range = "#F6D1A0",
+                                           three_point_line = "#1D428A",
+                                           painted_area = "#FFC72C",
+                                           lane_boundary = "#1D428A",
+                                           free_throw_circle_outline =
+                                             "#1D428A",
+                                           free_throw_circle_fill = "#F6D1A0",
+                                           free_throw_circle_dash = "#1D428A",
+                                           lane_space_mark = "#1D428A",
+                                           inbounding_line = "#1D428A",
+                                           substitution_line = "#1D428A",
+                                           baseline_lower_defensive_box =
+                                             "#1D428A",
+                                           lane_lower_defensive_box = "#1D428A",
+                                           team_bench_line = "#1D428A",
+                                           restricted_arc = "#1D428A",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#FFC72C"))
+goldenstate_court
+```
+
+##Houston Rockets
+```{r}
+houston_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#FBDAB9",
+                                           offensive_half_court = "#FBDAB9",
+                                           court_apron = "#CE1141",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#FBDAB9",
+                                           division_line = "#000000",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#FBDAB9",
+                                           three_point_line = "#000000",
+                                           painted_area = "#CE1141",
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline =
+                                             "#000000",
+                                           free_throw_circle_fill = "#FBDAB9",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#CE1141"))
+houston_court
+```
+
+##Indiana Pacers
+```{r}
+indiana_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F4D99B",
+                                           offensive_half_court = "#F4D99B",
+                                           court_apron = "#002D62",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F4D99B",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F4D99B",
+                                           three_point_line = "#ffffff",
+                                           painted_area = "#002D62",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#F4D99B",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#002D62"))
+indiana_court
+```
+
+##Los Angeles Clippers
+```{r}
+losangelesc_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EFCB9E",
+                                           offensive_half_court = "#EFCB9E",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#EFCB9E",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#EFCB9E",
+                                           three_point_line = "#1D428A",
+                                           painted_area = "#000000",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#C8102E",
+                                           free_throw_circle_fill = "#EFCB9E",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#C8102E",
+                                           inbounding_line = "#C8102E",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#1D428A",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#000000"))
+losangelesc_court
+```
+
+##Los Angeles Lakers
+```{r}
+losangelesl_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F8D6A9",
+                                           offensive_half_court = "#F8D6A9",
+                                           court_apron = "#FDB927",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F8D6A9",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F8D6A9",
+                                           three_point_line = "#552583",
+                                           painted_area = "#552583",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#F8D6A9",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#552583"))
+losangelesl_court
+```
+
+##Memphis Grizzlies
+```{r}
+memphis_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EEC78F",
+                                           offensive_half_court = "#EEC78F",
+                                           court_apron = "#EEC78F",
+                                           center_circle_outline = "#12173F",
+                                           center_circle_fill = "#EEC78F",
+                                           division_line = "#12173F",
+                                           endline = "#12173F",
+                                           sideline = "#12173F",
+                                           two_point_range = "#EEC78F",
+                                           three_point_line = "#12173F",
+                                           painted_area = "#5D76A9",
+                                           lane_boundary = "#12173F",
+                                           free_throw_circle_outline =
+                                             "#12173F",
+                                           free_throw_circle_fill = "#EEC78F",
+                                           free_throw_circle_dash = "#12173F",
+                                           lane_space_mark = "#12173F",
+                                           inbounding_line = "#12173F",
+                                           substitution_line = "#12173F",
+                                           baseline_lower_defensive_box =
+                                             "#12173F",
+                                           lane_lower_defensive_box = "#12173F",
+                                           team_bench_line = "#12173F",
+                                           restricted_arc = "#12173F",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#5D76A9"))
+memphis_court
+```
+
+##Miami Heat
+```{r}
+miami_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EABB7D",
+                                           offensive_half_court = "#EABB7D",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#EABB7D",
+                                           division_line = "#000000",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#EABB7D",
+                                           three_point_line = "#000000",
+                                           painted_area = '#98002e',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#EABB7D",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#98002e"))
+miami_court
+```
+
+##Milwaukee Bucks
+```{r}
+milwaukee_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F9BF84",
+                                           offensive_half_court = "#F9BF84",
+                                           court_apron = "#00471B",
+                                           center_circle_outline = "#00471B",
+                                           center_circle_fill = "#F9BF84",
+                                           division_line = "#00471B",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F9BF84",
+                                           three_point_line = "#00471B",
+                                           painted_area = '#00471B',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#F9BF84",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#00471B"))
+milwaukee_court
+```
+
+##Minnesota Timberwolves
+```{r}
+minnesota_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E4D299",
+                                           offensive_half_court = "#E4D299",
+                                           court_apron = "#0C2340",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#E4D299",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#E4D299",
+                                           three_point_line = "#0C2340",
+                                           painted_area = '#0C2340',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#E4D299",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#0C2340"))
+minnesota_court
+```
+
+##New Orleans Pelicans
+```{r}
+neworleans_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F9DDC0",
+                                           offensive_half_court = "#F9DDC0",
+                                           court_apron = "#0C2340",
+                                           center_circle_outline = "#0C2340",
+                                           center_circle_fill = "#F9DDC0",
+                                           division_line = "#0C2340",
+                                           endline = "#C8102E",
+                                           sideline = "#C8102E",
+                                           two_point_range = "#F9DDC0",
+                                           three_point_line = "#0C2340",
+                                           painted_area = '#F9DDC0',
+                                           lane_boundary = "#0C2340",
+                                           free_throw_circle_outline = "#0C2340",
+                                           free_throw_circle_fill = "#F9DDC0",
+                                           free_throw_circle_dash = "#0C2340",
+                                           lane_space_mark = "#0C2340",
+                                           inbounding_line = "#0C2340",
+                                           substitution_line = "#C8102E",
+                                           baseline_lower_defensive_box = "#0C2340",
+                                           lane_lower_defensive_box = "#0C2340",
+                                           team_bench_line = "#0C2340",
+                                           restricted_arc = "#0C2340",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#F9DDC0"))
+neworleans_court
+```
+
+##New York Knicks
+```{r}
+newyork_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F6D19E",
+                                           offensive_half_court = "#F6D19E",
+                                           court_apron = "#0072CE",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F6D19E",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F6D19E",
+                                           three_point_line = "#0072CE",
+                                           painted_area = '#0072CE',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#F6D19E",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#FE5000",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#0072CE"))
+newyork_court
+```
+
+##Oklahoma City Thunder
+```{r}
+oklahomacity_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F4D8B4",
+                                           offensive_half_court = "#F4D8B4",
+                                           court_apron = "#007AC1",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F4D8B4",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F4D8B4",
+                                           three_point_line = "#ffffff",
+                                           painted_area = '#007AC1',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#F4D8B4",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#007AC1"))
+oklahomacity_court
+```
+
+##Orlando Magic
+```{r}
+orlando_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EDBF93",
+                                           offensive_half_court = "#EDBF93",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#EDBF93",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#EDBF93",
+                                           three_point_line = "#0077C0",
+                                           painted_area = "#0077C0",
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline =
+                                             "#ffffff",
+                                           free_throw_circle_fill = "#EDBF93",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box =
+                                             "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#0077C0"))
+orlando_court
+```
+
+##Philadelphia 76ers
+```{r}
+philadelphia_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EEC89B",
+                                           offensive_half_court = "#EEC89B",
+                                           court_apron = "#006BB6",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#EEC89B",
+                                           division_line = "#ffffff",
+                                           endline = "#ED174C",
+                                           sideline = "#ED174C",
+                                           two_point_range = "#EEC89B",
+                                           three_point_line = "#ffffff",
+                                           painted_area = '#006BB6',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#EEC89B",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ED174C",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#006BB6"))
+philadelphia_court
+```
+
+##Phoenix Suns
+```{r}
+phoenix_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#EDDAB7",
+                                           offensive_half_court = "#EDDAB7",
+                                           court_apron = "#1D1160",
+                                           center_circle_outline = "#1D1160",
+                                           center_circle_fill = "#EDDAB7",
+                                           division_line = "#1D1160",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F1E3CA",
+                                           three_point_line = "#1D1160",
+                                           painted_area = '#E56020',
+                                           lane_boundary = "#1D1160",
+                                           free_throw_circle_outline = "#E56020",
+                                           free_throw_circle_fill = "#F1E3CA",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#1D1160",
+                                           inbounding_line = "#1D1160",
+                                           substitution_line = "#E56020",
+                                           baseline_lower_defensive_box = "#1D1160",
+                                           lane_lower_defensive_box = "#1D1160",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#EE8733",
+                                           basket_ring = "#EE8733",
+                                           net = "#E56020"))
+phoenix_court
+```
+
+##Portland Trail Blazers
+```{r}
+portland_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E3BA8B",
+                                           offensive_half_court = "#E3BA8B",
+                                           court_apron = "#E03A3E",
+                                           center_circle_outline = "#E03A3E",
+                                           center_circle_fill = "#E3BA8B",
+                                           division_line = "#E03A3E",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#E3BA8B",
+                                           three_point_line = "#E03A3E",
+                                           painted_area = '#E03A3E',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#E3BA8B",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#E03A3E",
+                                           substitution_line = "#000000",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#E03A3E"))
+portland_court
+```
+
+##Sacramento Kings
+```{r}
+sacramento_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F4C598",
+                                           offensive_half_court = "#F4C598",
+                                           court_apron = "#5A2D81",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F4C598",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#F4C598",
+                                           three_point_line = "#ffffff",
+                                           painted_area = '#000000',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#F4C598",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#000000"))
+sacramento_court
+```
+
+##San Antonio Spurs
+```{r}
+sanantonio_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E7C3A1",
+                                           offensive_half_court = "#E7C3A1",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#E7C3A1",
+                                           division_line = "#000000",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#E7C3A1",
+                                           three_point_line = "#000000",
+                                           painted_area = '#000000',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#C5AC70",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#000000"))
+sanantonio_court
+```
+
+##Toronto Raptors
+```{r}
+toronto_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#E2C4AF",
+                                           offensive_half_court = "#E2C4AF",
+                                           court_apron = "#CE1141",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#E2C4AF",
+                                           division_line = "#000000",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#E2C4AF",
+                                           three_point_line = "#000000",
+                                           painted_area = '#CE1141',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#E2C4AF",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#000000",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#CE1141"))
+toronto_court
+```
+
+##Utah Jazz
+```{r}
+utah_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#DDB38E",
+                                           offensive_half_court = "#DDB38E",
+                                           court_apron = "#000000",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#DDB38E",
+                                           division_line = "#000000",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#DDB38E",
+                                           three_point_line = "#000000",
+                                           painted_area = '#000000',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#DDB38E",
+                                           free_throw_circle_dash = "#FFF100",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#FFF100",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#FFF100",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#000000"))
+utah_court
+```
+
+##Washington Wizards
+```{r}
+washington_court <- geom_basketball(league = "NBA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#F4C187",
+                                           offensive_half_court = "#F4C187",
+                                           court_apron = "#002B5C",
+                                           center_circle_outline = "#ffffff",
+                                           center_circle_fill = "#F4C187",
+                                           division_line = "#ffffff",
+                                           endline = "#ffffff",
+                                           sideline = "#ffffff",
+                                           two_point_range = "#E7A66C",
+                                           three_point_line = "#E31837",
+                                           painted_area = '#E31837',
+                                           lane_boundary = "#ffffff",
+                                           free_throw_circle_outline = "#ffffff",
+                                           free_throw_circle_fill = "#E7A66C",
+                                           free_throw_circle_dash = "#ffffff",
+                                           lane_space_mark = "#ffffff",
+                                           inbounding_line = "#ffffff",
+                                           substitution_line = "#ffffff",
+                                           baseline_lower_defensive_box = "#ffffff",
+                                           lane_lower_defensive_box = "#ffffff",
+                                           team_bench_line = "#ffffff",
+                                           restricted_arc = "#ffffff",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#E31837"))
+washington_court
+```
+
+#NCAA Court Creation
+##NCAA Base Final Four Court
+```{r}
+ncaa_court <- geom_basketball(league = "NCAA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#ECD5B6",
+                                           offensive_half_court = "#ECD5B6",
+                                           court_apron = "#0D1635",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#ECD5B6",
+                                           division_line = "#000000",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#D5AF7E",
+                                           three_point_line = "#000000",
+                                           painted_area = '#ECD5B6',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#ECD5B6",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#000000",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#ECD5B6"))
+ncaa_court
+```
+
+##Alabama
+```{r}
+alabama_court <- geom_basketball(league = "NCAA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#ECD5B6",
+                                           offensive_half_court = "#ECD5B6",
+                                           court_apron = "#0D1635",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#ECD5B6",
+                                           division_line = "#000000",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#D5AF7E",
+                                           three_point_line = "#000000",
+                                           painted_area = '#ECD5B6',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#ECD5B6",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#000000",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#ECD5B6"))
+alabama_court
+```
+
+##Syracuse
+```{r}
+syracuse_court <- geom_basketball(league = "NCAA", 
+                                rotation = 270, 
+                                display_range = "offense",
+                                color_updates =  list(plot_background = NULL,
+                                           defensive_half_court = "#ECD5B6",
+                                           offensive_half_court = "#ECD5B6",
+                                           court_apron = "#0D1635",
+                                           center_circle_outline = "#000000",
+                                           center_circle_fill = "#ECD5B6",
+                                           division_line = "#000000",
+                                           endline = "#000000",
+                                           sideline = "#000000",
+                                           two_point_range = "#D5AF7E",
+                                           three_point_line = "#000000",
+                                           painted_area = '#ECD5B6',
+                                           lane_boundary = "#000000",
+                                           free_throw_circle_outline = "#000000",
+                                           free_throw_circle_fill = "#ECD5B6",
+                                           free_throw_circle_dash = "#000000",
+                                           lane_space_mark = "#000000",
+                                           inbounding_line = "#000000",
+                                           substitution_line = "#000000",
+                                           baseline_lower_defensive_box = "#000000",
+                                           lane_lower_defensive_box = "#000000",
+                                           team_bench_line = "#000000",
+                                           restricted_arc = "#000000",
+                                           backboard = "#f55b33",
+                                           basket_ring = "#f55b33",
+                                           net = "#ECD5B6"))
+syracuse_court
+```
+
+
+#Shot Chart Creation
+##NBA Player
+```{r}
+lamar_stevens_shots <- filter(nba2,namePlayer=="Lamar Stevens")
+lamar_stevens <- cleveland_court +
+  geom_point(lamar_stevens_shots, mapping = aes(x=locationX, y=locationY, color = typeEvent), size = 4) +
+  scale_color_manual(aesthetics = "color", values = c("green3","red2"), labels=c("Made Shot", "Missed Shot")) +
+  theme(panel.background = element_rect(fill = "black", color="black"),
+        plot.background = element_rect(fill = "black", color="black"),
+        text = element_text(family = "Comic Sans MS"),
+        plot.title = element_text(colour = "white", hjust = .5, face = "bold", size = 14, vjust = 0.5),
+        plot.subtitle = element_text(colour = "white", hjust = .5, size = 8),
+        plot.caption = element_text(colour = "white", size = 6),
+        legend.position = c(.5,.075),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        legend.text = element_text(hjust = .4, vjust = .5, size = 15, family = "Comic Sans MS", face = "bold", colour = "white"))
+lamar_stevens
+```
+
+##NCAA Player
+```{r}
+gradey_dick_shots <- filter(ncaa2,shooter=="Gradey Dick")
+gradey_dick <- ncaa_court +
+  geom_point(gradey_dick_shots, mapping = aes(x=loc_x, y=loc_y, color = shot_outcome), size = 4) +
+  scale_color_manual(aesthetics = "color", values = c("green3","red2"), labels=c("Made Shot", "Missed Shot")) +
+  theme(panel.background = element_rect(fill = "black", color="black"),
+        plot.background = element_rect(fill = "black", color="black"),
+        text = element_text(family = "Comic Sans MS"),
+        plot.title = element_text(colour = "white", hjust = .5, face = "bold", size = 14, vjust = 0.5),
+        plot.subtitle = element_text(colour = "white", hjust = .5, size = 8),
+        plot.caption = element_text(colour = "white", size = 6),
+        legend.position = c(.5,.075),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        legend.text = element_text(hjust = .4, vjust = .5, size = 15, family = "Comic Sans MS", face = "bold", colour = "white"))
+gradey_dick
+```
+
+#Binned Kernel Density Estimation Plots
+##NBA Player
+```{r}
+markelle_fultz_shots <- filter(nba2,namePlayer=="Markelle Fultz")
+x <- bkde(markelle_fultz_shots$locationX,kernel = "normal", canonical = FALSE, truncate = TRUE)
+x <- data.frame(x=x[["x"]],y=x[["y"]])
+markelle_bkde <- x %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() +
+  coord_equal()
+markelle_bkde
+```
+
+##NCAA Player
+```{r}
+judah_mintz_shots <- filter(ncaa2,shooter=="Judah Mintz")
+x2 <- bkde(judah_mintz_shots$loc_x,kernel = "normal", canonical = FALSE, truncate = TRUE)
+x2 <- data.frame(x=x2[["x"]],y=x2[["y"]])
+judah_bkde <- x2 %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() +
+  coord_equal()
+judah_bkde
+```
+
+#Kullback-Leibler Divergence
+```{r}
+KLD(x2$x,x$x)
+```
+
+#Example
+```{r}
+nba2 <- los_angeles_c
+nba2$locationX <- nba2$locationX/10
+nba2$locationY <- nba2$locationY/10
+nba2$locationY <- nba2$locationY - 41.75
+
+ncaa2 <- brandon_miller_shots
+ncaa2$loc_y <- ncaa2$loc_y - 47
+
+paul_george_shots <- filter(nba2,namePlayer=="Paul George")
+paul_george <- losangelesc_court +
+  geom_point(paul_george_shots, mapping = aes(x=locationX, y=locationY, color = typeEvent), size = 4) +
+  scale_color_manual(aesthetics = "color", values = c("green3","red2"), labels=c("Made Shot", "Missed Shot")) +
+  theme(panel.background = element_rect(fill = "black", color="black"),
+        plot.background = element_rect(fill = "black", color="black"),
+        text = element_text(family = "Comic Sans MS"),
+        plot.title = element_text(colour = "white", hjust = .5, face = "bold", size = 14, vjust = 0.5),
+        plot.subtitle = element_text(colour = "white", hjust = .5, size = 8),
+        plot.caption = element_text(colour = "white", size = 6),
+        legend.position = c(.5,.075),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        legend.text = element_text(hjust = .4, vjust = .5, size = 15, family = "Comic Sans MS", face = "bold", colour = "white"))
+paul_george
+```
+
+```{r}
+brandon_miller_shots <- filter(ncaa2,shooter=="Brandon Miller")
+brandon_miller <- ncaa_court +
+  geom_point(brandon_miller_shots, mapping = aes(x=loc_x, y=loc_y, color = shot_outcome), size = 4) +
+  scale_color_manual(aesthetics = "color", values = c("green3","red2"), labels=c("Made Shot", "Missed Shot")) +
+  theme(panel.background = element_rect(fill = "black", color="black"),
+        plot.background = element_rect(fill = "black", color="black"),
+        text = element_text(family = "Comic Sans MS"),
+        plot.title = element_text(colour = "white", hjust = .5, face = "bold", size = 14, vjust = 0.5),
+        plot.subtitle = element_text(colour = "white", hjust = .5, size = 8),
+        plot.caption = element_text(colour = "white", size = 6),
+        legend.position = c(.5,.075),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        legend.text = element_text(hjust = .4, vjust = .5, size = 15, family = "Comic Sans MS", face = "bold", colour = "white"))
+brandon_miller
+```
+
+```{r}
+x <- bkde(paul_george_shots$locationX,kernel = "normal", canonical = FALSE, truncate = TRUE)
+x <- data.frame(x=x[["x"]],y=x[["y"]])
+paul_george_bkde <- x %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() +
+  coord_equal()
+paul_george_bkde
+```
+
+```{r}
+x2 <- bkde(brandon_miller_shots$loc_x,kernel = "normal", canonical = FALSE, truncate = TRUE)
+x2 <- data.frame(x=x2[["x"]],y=x2[["y"]])
+brandon_miller_bkde <- x2 %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() +
+  coord_equal()
+brandon_miller_bkde
+```
+
+```{r}
+KLD(x2$x,x$x)
+```
+
+
+```{r}
+nba_player_list <- unique(nba2$namePlayer)
+nba_player_list
+```
+
+```{r}
+player <- filter(nba2,namePlayer=="Markelle Fultz")
+player_shots <- ggplot(player, aes(locationX, locationY)) + geom_point()
+player_shots
+```
+
+
+#Shiny App For Loop
+```{r}
+# Create a dataframe for Judah Mintz's binned kernel density estimate for X
+x2 <- bkde(gradey_dick_shots$loc_x, kernel = "normal", canonical = FALSE, truncate = TRUE)
+x2 <- data.frame(x = x2[["x"]], y = x2[["y"]])
+
+# Initialize an empty list to store the divergences
+divergences <- list()
+
+# Loop over each unique NBA player's name
+for (player_name in unique(nba2$namePlayer)) {
+  # Filter the NBA player's shots
+  player_shots <- filter(nba2, namePlayer == player_name)
+  # Create a dataframe for the NBA player's binned kernel density estimate
+  x <- bkde(player_shots$locationX, kernel = "normal", canonical = FALSE, truncate = TRUE)
+  x <- data.frame(x = x[["x"]], y = x[["y"]])
+  # Calculate the Kullback-Leibler divergence between the NBA player's shots and Judah Mintz's shots
+  divergence <- KLD(x2$x, x$x)
+  # Store the divergence and the NBA player's name in the list
+  divergences[[player_name]] <- data.frame(divergence = divergence, namePlayer = player_name)
+}
+
+# Convert the list to a data frame
+divergences_df_x <- do.call(rbind, divergences)
+
+divergences_df_x <- subset(divergences_df_x, select = c(divergence.mean.sum.KLD, namePlayer))
+divergences_df_x <- distinct(divergences_df_x)
+names(divergences_df_x)[1] <- "divergence.mean.sum.KLD.x"
+
+# Create a dataframe for Judah Mintz's binned kernel density estimate for Y
+x2 <- bkde(gradey_dick_shots$loc_y, kernel = "normal", canonical = FALSE, truncate = TRUE)
+x2 <- data.frame(x = x2[["x"]], y = x2[["y"]])
+
+# Initialize an empty list to store the divergences
+divergences <- list()
+
+# Loop over each unique NBA player's name
+for (player_name in unique(nba2$namePlayer)) {
+  # Filter the NBA player's shots
+  player_shots <- filter(nba2, namePlayer == player_name)
+  # Create a dataframe for the NBA player's binned kernel density estimate
+  x <- bkde(player_shots$locationY, kernel = "normal", canonical = FALSE, truncate = TRUE)
+  x <- data.frame(x = x[["x"]], y = x[["y"]])
+  # Calculate the Kullback-Leibler divergence between the NBA player's shots and Judah Mintz's shots
+  divergence <- KLD(x2$x, x$x)
+  # Store the divergence and the NBA player's name in the list
+  divergences[[player_name]] <- data.frame(divergence = divergence, namePlayer = player_name)
+}
+
+# Convert the list to a data frame
+divergences_df_y <- do.call(rbind, divergences)
+
+divergences_df_y <- subset(divergences_df_y, select = c(divergence.mean.sum.KLD, namePlayer))
+divergences_df_y <- distinct(divergences_df_y)
+names(divergences_df_y)[1] <- "divergence.mean.sum.KLD.y"
+
+#Merge the x and y dataframes
+divergences_df <- merge(divergences_df_x, divergences_df_y, by = "namePlayer")
+divergences_df$divergence.mean.sum.KLD <- divergences_df$divergence.mean.sum.KLD.x + divergences_df$divergence.mean.sum.KLD.y
+
+# Find the 5 smallest divergences and the corresponding NBA player's names
+result <- head(divergences_df[order(divergences_df$divergence.mean.sum.KLD),], 5)
+result <- subset(result, select = c(namePlayer, divergence.mean.sum.KLD))
+names(result)[1] <- "Player"
+names(result)[2] <- "Divergence"
+smallest_divergences <- result$Divergence
+nba_player_names <- result$Player
+
+cat("The 5 smallest Kullback-Leibler divergences are:", smallest_divergences)
+cat("\nThe corresponding NBA player names are:", nba_player_names)
+```
+
+

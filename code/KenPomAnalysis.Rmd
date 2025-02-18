@@ -1,0 +1,491 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Packages
+```{r}
+library(tidyverse)
+library(stringr)
+library(rvest)
+library(hoopR)
+```
+
+KenPom FanMatch Python Data Load & Manipulation (kenpompy)
+```{r}
+# Get today's date in "yyyymmdd" format
+current_date <- format(Sys.Date(), "%Y%m%d")
+
+# Construct the filename and read the CSV file
+file_name <- paste0("fanmatch_", current_date, ".csv")
+df_name <- paste0("fanmatch_", current_date)
+
+# Read the CSV, select specific columns, and filter out rows with NA in 'PredictedWinner'
+temp_df <- read_csv(file_name) %>% 
+  select(1, 3, 10, 11, 14) %>% 
+  filter(!is.na(PredictedWinner)) %>%
+  mutate(
+    # Replace occurrences of two spaces after "at" or "vs" with a single space
+    Game = str_replace_all(Game, "(?<=\\s(at|vs))\\s{2,}", " "),
+    
+    # Extract the home ranking number (first part before the first space)
+    away_rk = as.numeric(str_extract(Game, "^\\d+")),
+    
+    # Extract the home team name (from after the home ranking to the first " at " or " vs ")
+    away = str_extract(Game, "(?<=\\d\\s)([A-Za-z&\\s\\.]+)(?=\\s(?:at|vs)\\s)"),
+    
+    # Extract the away ranking number (the part after " at " or " vs " and before the second space)
+    home_rk = as.numeric(str_extract(Game, "(?<=\\s(?:at|vs)\\s)\\d+")),
+    
+    # Extract the away team name (after the second ranking number)
+    home = sub(".*(at|vs)[[:space:]]*\\d+[[:space:]]*(.*)", "\\2", Game),
+    
+    # Determine if the game is at a neutral site (1 for "vs", 0 for "at")
+    neutral = if_else(str_detect(Game, "\\svs\\s"), 1, 0)
+  ) 
+
+temp_df <- temp_df %>%
+  mutate(
+    # Extract the scores using regex
+    home_score = sapply(1:nrow(temp_df), function(i) {
+      scores <- regmatches(temp_df$PredictedWinner[i], regexpr("\\d{2,3}-\\d{2,3}", temp_df$PredictedWinner[i]))
+      score_win <- as.numeric(strsplit(scores, "-")[[1]][1])
+      score_lose <- as.numeric(strsplit(scores, "-")[[1]][2])
+      
+      # Assign home score based on team name
+      if(grepl(temp_df$home[i], temp_df$PredictedWinner[i])) {
+        return(score_win)
+      } else {
+        return(score_lose)
+      }
+    }),
+    
+    away_score = sapply(1:nrow(temp_df), function(i) {
+      scores <- regmatches(temp_df$PredictedWinner[i], regexpr("\\d{2,3}-\\d{2,3}", temp_df$PredictedWinner[i]))
+      score_win <- as.numeric(strsplit(scores, "-")[[1]][1])
+      score_lose <- as.numeric(strsplit(scores, "-")[[1]][2])
+      
+      # Assign away score based on team name
+      if(grepl(temp_df$away[i], temp_df$PredictedWinner[i])) {
+        return(score_win)
+      } else {
+        return(score_lose)
+      }
+    })
+  ) %>%
+  mutate(
+    PredictedScore = as.numeric(gsub("[()%]", "", PredictedScore)) / 100,
+    home_win_prob = ifelse(home_score > away_score, 
+                           PredictedScore, 
+                           1 - PredictedScore),
+    away_win_prob = 1 - home_win_prob,
+    home_spread = away_score - home_score,
+    away_spread = home_score - away_score,
+    total = home_score + away_score
+  ) %>%
+  mutate(
+    Game = gsub("\\d+", "", Game),
+    Game = str_replace_all(Game, "(?<=\\s(at|vs))\\s{2,}", " "),
+    Game = str_trim(Game)
+  ) %>% 
+  select(1, 10, 2, 8, 9, 11, 6, 7, 12, 13:17)
+
+# Assign the processed dataframe to a dynamically named variable
+assign(df_name, temp_df)
+
+# Clean up the temporary dataframe if needed
+rm(temp_df)
+```
+
+#HoopR KenPom Data Load
+```{r}
+Sys.setenv(KP_USER = "nickaluk1030@gmail.com")
+Sys.setenv(KP_PW = "N1ch0las103001")
+login(user_email = Sys.getenv("KP_USER"), user_pw = Sys.getenv("KP_PW"))
+temp_df <- kp_fanmatch(date = "2025-02-11")
+temp_df <- temp_df %>%
+  mutate()
+```
+
+KenPom FanMatch Excel Data Load & Manipulation
+```{r}
+setwd("~/Documents/SAL/KenPom Model/FanMatch csvs")
+# Get today's date in "yyyymmdd" format
+current_date <- format(Sys.Date(), "%Y%m%d")
+
+# Construct the filename and read the CSV file
+file_name <- paste0("fanmatchExcel_", current_date, ".csv")
+df_name <- paste0("fanmatchExcel_", current_date)
+
+#file_name <- paste0("fanmatchExcel_20241231.csv")
+#df_name <- paste0("fanmatchExcel_20241231")
+
+# Extracting the information in the "Game" column to new columns
+#setwd("~/Documents/SAL/KenPom Model/FanMatch csvs")
+temp_df <- read_csv(file_name) %>%
+  slice(-1) %>% 
+  select(1, 2, 5) %>%
+  mutate(
+    # Extract the away ranking number (first part before the first space)
+    away_rk = as.numeric(str_extract(Game, "^\\d+")),
+    
+    # Extract the away team name (from after the away ranking to the first "at" or "vs.")
+    away = str_extract(Game, "(?<=\\d\\s)([A-Za-z0-9&\\s\\.\\']+)(?=\\s(?:vs\\.|at)\\s)"),
+    
+    # Extract the home ranking number (the part after "at" or "vs." and before the second space)
+    home_rk = as.numeric(str_extract(Game, "(?<=\\b(?:vs\\.|at)\\s)\\d+")),
+    
+    # Extract the home team name (after the home ranking number)
+    home = str_extract(Game, "(?<=\\b(?:vs\\.|at)\\s)([A-Za-z0-9&\\s\\.\\']+)"),
+    home = str_extract(home, "(?<=^\\d{1,3}\\s).*"),
+    
+    # Determine if the game is at a neutral site (1 for "vs., 0 for "at")
+    neutral = if_else(str_detect(Game, "\\svs.\\s"), 1, 0)
+  ) 
+
+# Splitting of the "Prediction" column into two columns, "PredictedWinner" and "PredictedScore"
+temp_df <- temp_df %>%
+  rename(PredictedWinner = Prediction) %>% #Contains the winning team and score
+  mutate(PredictedScore = str_extract(PredictedWinner, "\\(.*"),
+         PredictedWinner = str_replace(PredictedWinner, "\\(.*", ""),
+         PredictedWinner = str_trim(PredictedWinner),
+         PredictedScore = str_sub(PredictedScore, 1, nchar(PredictedScore) - 5))
+         # Contains the winning team's win percentage (%)
+
+# List of words to remove
+words_to_remove <- c("SEC", "B10", "B12", "BE", "ACC",
+                     "MWC", "WCC", "A10", "Amer", "CUSA",
+                     "MVC", "Ivy", "BW", "WAC", "SC",
+                     "BSth", "CAA", "SB", "Horz", "Sum",
+                     "BSky", "MAC", "Slnd", "ASun", "AE",
+                     "MAAC", "PL", "OVC", "MEAC", "NEC", "SWAC")
+
+# Modify the 'home' column
+temp_df <- temp_df %>%
+  mutate(home = if_else(str_extract(home, "\\S+$") %in% words_to_remove,
+                        str_remove(home, "\\s\\S+$"),
+                        home))
+
+temp_df <- temp_df %>%
+  mutate(
+    # Extract the home and away scores using regex
+    home_score = sapply(1:nrow(temp_df), function(i) {
+      scores <- regmatches(temp_df$PredictedWinner[i], regexpr("\\d{2,3}-\\d{2,3}", temp_df$PredictedWinner[i]))
+      score_win <- as.numeric(strsplit(scores, "-")[[1]][1])
+      score_lose <- as.numeric(strsplit(scores, "-")[[1]][2])
+      team_win <- sub("\\s\\d{2}-\\d{2}$", "", temp_df$PredictedWinner[i])
+      
+      # Assign home score based on team name within "home" and "PredictedWinner"
+      if(temp_df$home[i] == team_win) {
+        return(score_win)
+      } else {
+        return(score_lose)
+      }
+    }),
+    away_score = sapply(1:nrow(temp_df), function(i) {
+      scores <- regmatches(temp_df$PredictedWinner[i], regexpr("\\d{2,3}-\\d{2,3}", temp_df$PredictedWinner[i]))
+      score_win <- as.numeric(strsplit(scores, "-")[[1]][1])
+      score_lose <- as.numeric(strsplit(scores, "-")[[1]][2])
+      team_win <- sub("\\s\\d{2}-\\d{2}$", "", temp_df$PredictedWinner[i])
+      
+      # Assign away score based on team name within "away" and "PredictedWinner"
+      if(temp_df$away[i] == team_win) {
+        return(score_win)
+      } else {
+        return(score_lose)
+      }
+    })
+  ) %>%
+  mutate(# Changing the "PredictedScore" column to a probability not percentage
+    PredictedScore = as.numeric(gsub("[()%]", "", PredictedScore)) / 100,
+    home_win_prob = ifelse(home_score > away_score, 
+                           PredictedScore, 
+                           1 - PredictedScore),
+    away_win_prob = 1 - home_win_prob,
+    ##### home_score = ifelse(home == "Iowa St.", 100, home_score),
+    home_spread = away_score - home_score, # Calculating predicted spread from home and away scores
+    away_spread = home_score - away_score,
+    total = home_score + away_score # Calculating predicted total from home and away scores
+  ) %>% 
+  select(1, 2, 3, 8, 6, 7, 10, 4, 5, 11, 12:16)
+
+# Duplication of rows where game is neutral site so multiple ids can be made for evantually merging with DraftKings data
+temp_df <- temp_df %>%
+  # Swapping of all home and away information
+  bind_rows(
+    temp_df %>%
+      filter(neutral == 1) %>%
+      mutate(
+        home_rk_tmp = away_rk,
+        away_rk = home_rk,
+        home_tmp = away,
+        away = home,
+        home_score_tmp = away_score,
+        away_score = home_score,
+        home_win_prob_tmp = away_win_prob,
+        away_win_prob = home_win_prob,
+        home_spread_tmp = away_spread,
+        away_spread = home_spread,
+      ) %>%
+      select(-home_rk, -home, -home_score, -home_win_prob, -home_spread) %>%
+      rename(home_rk = home_rk_tmp,
+             home = home_tmp,
+             home_score = home_score_tmp,
+             home_win_prob = home_win_prob_tmp,
+             home_spread = home_spread_tmp,)
+  )
+
+
+
+# Creation of game ids through concatenating team names
+temp_df <- temp_df %>%
+  mutate(id = str_c(home, away, sep = "_"))
+
+# Assign the processed dataframe to a dynamically named variable
+assign(df_name, temp_df)
+
+# Remove the temporary dataframe
+rm(temp_df)
+```
+
+Draft Kings Lines Scrape
+```{r}
+# Define the URL
+url <- "https://sportsbook.draftkings.com/leagues/basketball/ncaab?category=game-lines&subcategory=game"
+
+# Read the HTML content from the webpage
+webpage <- read_html(url)
+
+# Scrape the text inside the <div class="event-cell__name-text">
+team_names <- webpage %>%
+  html_nodes(".event-cell__name-text") %>%
+  html_text()
+
+####### team_names <- team_names[!team_names %in% c("VMI", "Samford")]
+
+away_teams <- team_names[seq(1, length(team_names), by = 2)]  # Odd-indexed values (away)
+home_teams <- team_names[seq(2, length(team_names), by = 2)]  # Even-indexed values (home)
+
+# Scraping the spread and total information from the text inside the <div class="sportsbook-outcome-cell">
+lines <- webpage %>%
+  html_nodes(".sportsbook-outcome-cell__line") %>%
+  html_text()
+
+####### lines <- lines[-c(93:95)]
+
+# Defining indices to remove to remove duplicate spread and total information
+indices_to_remove <- c(seq(3, length(lines), by = 4), seq(4, length(lines), by = 4))
+
+# Remove the elements at these indices using negative indexing
+lines <- lines[-indices_to_remove]
+
+away_spread2 <- lines[seq(1, length(lines), by = 2)] # Odd-indexed values (away spread)
+total2 <- lines[seq(2, length(lines), by = 2)] # Even-indexed values (total)
+total2 <- as.numeric(total2)
+
+# Creation of the dynamic dataframe name
+df_name <- paste0("dk_", current_date)
+
+# Create the temporary dataframe and assign it dynamically
+temp_df <- data.frame(home = home_teams, away = away_teams, away_spread2 = away_spread2, total2 = total2)
+
+# Remove the + sign from underdog spreads and change the column to numeric
+temp_df$away_spread2 <- as.numeric(gsub("\\+", "", temp_df$away_spread2))
+
+# Creation of home spread value
+temp_df <- temp_df %>% 
+  mutate(home_spread2 = away_spread2*-1) %>%
+  select(1, 2, 5, 3, 4)
+```
+
+Remove Live/Future Days Games available for Betting
+```{r}
+# Removal of rows from the dataframe that contain games from future dates
+# Will have to check https://sportsbook.draftkings.com/leagues/basketball/ncaab?category=game-lines&subcategory=game
+temp_df <- temp_df[-c(141,142), ]
+temp_df[1, c("home_spread2", "away_spread2", "total2")] <- c(7.5, -7.5, 149.5)
+temp_df[2, c("home_spread2", "away_spread2", "total2")] <- c(-2.5, 2.5, 151.5)
+temp_df[3, c("home_spread2", "away_spread2", "total2")] <- c(4.5, -4.5, 162.5)
+```
+
+Check team name differences
+```{r}
+# Change all "State" occurences in team names to "St." (what KenPom uses)
+temp_df$home <- gsub("State", "St.", temp_df$home)
+temp_df$away <- gsub("State", "St.", temp_df$away)
+dknames <- c(temp_df$home, temp_df$away)
+
+kenpomnames <- read_csv("kenpomnames.csv")
+
+#Finding team names from DraftKings that are spelled/formatted differently on KenPom
+teams_not_in_kenpom <- setdiff(dknames, kenpomnames$Team)
+teams_not_in_kenpom
+```
+
+Update and check of known team name differences
+```{r}
+# Define the mapping vector for team name changes
+team_name_changes <- c(
+"NC Central" = "North Carolina Central",
+"Ole Miss" = "Mississippi",
+"ETSU" = "East Tennessee St.",
+"Queens NC" = "Queens",
+"Saint Josephs" = "Saint Joseph's",
+"NC St." = "N.C. State",
+"Nicholls St." = "Nicholls",
+"Gardner-Webb" = "Gardner Webb",
+"IU Indianapolis" = "IU Indy",
+"UMass" = "Massachusetts",
+"Grambling" = "Grambling St.",
+"Saint Thomas MN" = "St. Thomas",
+"Central Connecticut St." = "Central Connecticut",
+"Saint Francis PA" = "Saint Francis",
+"ULM" = "Louisiana Monroe",
+"Texas A&M-Commerce" = "Texas A&M Commerce",
+"Mount Saint Marys" = "Mount St. Mary's",
+"SIU Edwardsville" = "SIUE",
+"A&M-Corpus Christi" = "Texas A&M Corpus Chris",
+"Saint Marys" = "Saint Mary's",
+"California Baptist" = "Cal Baptist",
+"Omaha" = "Nebraska Omaha",
+"MD Eastern Shore" = "Maryland Eastern Shore",
+"Prairie View" = "Prairie View A&M",
+"Mississippi Valley" = "Mississippi Valley St.",
+"CSU Bakersfield" = "Cal St. Bakersfield",
+"Saint Bonaventure" = "St. Bonaventure",
+"Saint Johns" = "St. John's",
+"Albany NY" = "Albany",
+"Alcorn" = "Alcorn St.",
+"Arkansas-Pine Bluff" = "Arkansas Pine Bluff",
+"UConn" = "Connecticut",
+"Loyola Maryland" = "Loyola MD",
+"SE Louisiana" = "Southeastern Louisiana",
+"Bethune-Cookman" = "Bethune Cookman",
+"Sam Houston" = "Sam Houston St.",
+"UT Martin" = "Tennessee Martin",
+"Pennsylvania" = "Penn",
+"SE Missouri St." = "Southeast Missouri",
+"UMKC" = "Kansas City",
+"Southern University" = "Southern"
+#East Texas A&M will pop up if they play but is changed within KenPom
+)
+
+# Identify teams in teams_not_in_kenpom that aren't in team_name_changes
+teams_missing_in_changes <- teams_not_in_kenpom[!teams_not_in_kenpom %in% names(team_name_changes)]
+
+# Print missing teams
+teams_missing_in_changes
+```
+
+```{r}
+# Replace values in 'home' column based on the mapping
+temp_df$home <- sapply(temp_df$home, function(x) {
+  if (x %in% names(team_name_changes)) {
+    return(team_name_changes[x])
+  } else {
+    return(x)
+  }
+})
+
+# Replace values in 'away' column based on the mapping
+temp_df$away <- sapply(temp_df$away, function(x) {
+  if (x %in% names(team_name_changes)) {
+    return(team_name_changes[x])
+  } else {
+    return(x)
+  }
+})
+
+# Again checking for differences in naming (should be = character(0))
+dknames <- c(temp_df$home, temp_df$away)
+
+teams_not_in_kenpom <- setdiff(dknames, kenpomnames$Team)
+teams_not_in_kenpom
+```
+
+Dataframe renaming for automation
+```{r}
+temp_df <- temp_df %>%
+  mutate(id = str_c(home, away, sep = "_"))
+# Assign the processed dataframe to a dynamically named variable
+#setwd("~/Documents/SAL/KenPom Model")
+#temp_df <- read_csv("dk_20241231.csv")
+#df_name <- paste0("dk_20241231")
+assign(df_name, temp_df)
+
+# Removing the temporary dataframe
+rm(temp_df)
+```
+
+Value Picks (> 3 for Spread, > 5 for Total)
+```{r}
+# Creation of dynamic names for the two dataframes for merging
+dk_name <- paste0("dk_", current_date)
+fanmatch_name <- paste0("fanmatchExcel_", current_date)
+
+#dk_name <- paste0("dk_20241231")
+#fanmatch_name <- paste0("fanmatchExcel_20241231")
+
+# Joining of the DraftKings relevant columns with the KenPom data on "id"
+df_joined <- get(dk_name) %>%
+  select(id, home_spread2, away_spread2, total2) %>%
+  left_join(get(fanmatch_name), by = "id") %>%
+  select(5:19, 2:4) %>%
+  mutate(away_value = away_spread2 - away_spread, # Value columns created
+         home_value = home_spread2 - home_spread,
+         over_value = total - total2,
+         under_value = total2 - total)
+
+# Finding away teams with value spreads
+away_picks <- df_joined %>%
+  filter(away_value > 3) %>%
+  mutate(picks = if_else(away_spread2 > 0,
+                              paste(away, "+", away_spread2),
+                              paste(away, "", away_spread2))) %>%
+  select(picks, Game, PredictedWinner, neutral, away_spread, away_spread2, away_value) %>%
+  rename(spread = away_spread,
+         spread2 = away_spread2,
+         value = away_value)
+
+# Finding home teams with value spreads
+home_picks <- df_joined %>%
+  filter(home_value > 3) %>%
+  mutate(picks = if_else(home_spread2 > 0,
+                              paste(home, "+", home_spread2),
+                              paste(home, "", home_spread2))) %>%
+  select(picks, Game, PredictedWinner, neutral, home_spread, home_spread2, home_value) %>%
+  rename(spread = home_spread,
+         spread2 = home_spread2,
+         value = home_value)
+
+# Binding of the away and home spread picks
+spread_picks <- bind_rows(away_picks, home_picks)
+
+# Finding value picks for the over
+over_picks <- df_joined %>%
+  filter(over_value > 5) %>%
+  mutate(picks = paste0("o", total2)) %>%
+  select(picks, Game, PredictedWinner, neutral, total, total2, over_value) %>%
+  rename(value = over_value)
+
+# Finding value picks for the under
+under_picks <- df_joined %>%
+  filter(under_value > 5) %>%
+  mutate(picks = paste0("u", total2)) %>%
+  select(picks, Game, PredictedWinner, neutral, total, total2, under_value) %>%
+  rename(value = under_value)
+
+# Binding of the over and under total picks
+total_picks <- bind_rows(over_picks, under_picks)
+
+# View the picks dataframes
+print(spread_picks)
+print(total_picks)
+```
+
+

@@ -1,0 +1,2754 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-08-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(cfbfastR)
+library(rvest)
+library(stringr)
+library(xml2)
+library(tidyverse)
+library(ggplot2)
+library(purrr)
+library(gt)
+library(gtExtras)
+
+Sys.setenv(CFBD_API_KEY = "yfdv1c0OvQ4xbOvcniWWsHno/xPcyo9ThDlgPiVCHH68Q5b+241xUeSJhz1mu/Rr")
+```
+
+```{r}
+schedule <- espn_cfb_schedule(
+  year = 2024,
+  limit = 1000
+)
+filtered_df <- schedule[schedule$home_team_name != "TBD", ]
+filtered_df <- filtered_df[filtered_df$type != "postseason", ]
+games <- filtered_df %>% select(c(8, 2, 16, 20, 26, 30))
+extract_descriptor <- function(matchup_short) {
+  parts <- strsplit(matchup_short, " ")[[1]]
+  # Return the descriptor which is in the middle
+  return(parts[2])
+}
+
+# Apply the function to extract descriptors
+descriptors <- sapply(games$matchup_short, extract_descriptor)
+
+# Create the 'neutral' column based on the descriptors
+games$neutral <- ifelse(descriptors == "VS", 1, 0)
+teams <- unique(games$away_team_location)
+teams <- sort(teams)
+```
+
+```{r}
+# URL of the webpage
+url <- "https://www.kambour.net/football.html"
+
+# Read the HTML content from the webpage
+page <- read_html(url)
+
+# Target the specific <pre> tag using a detailed CSS selector
+pre_text <- page %>%
+  html_node("body center table:nth-of-type(3) tbody tr td font pre") %>%
+  html_text()
+
+# Assuming pre_text contains your text data
+lines <- unlist(strsplit(pre_text, "\n"))
+lines <- lines[lines != ""]
+
+data_list <- lapply(lines, function(line) {
+  match <- regmatches(line, regexec("^\\s*(\\d+)\\.\\s+(\\S.*?\\S)\\s+(\\d+\\.\\d+|\\-?\\d+\\.\\d+)\\s+(\\-?\\d+\\.\\d+)", line))[[1]]
+  if (length(match) == 5) {
+    return(data.frame(Rank = as.numeric(match[2]), 
+                      team = match[3], 
+                      Rating = as.numeric(match[4]), 
+                      HomeAd = as.numeric(match[5])))
+  } else {
+    return(NULL)
+  }
+})
+
+kambour <- do.call(rbind, data_list)
+kambour <- kambour %>% select(-Rank)
+```
+
+```{r}
+url <- "https://www.powerratings.com/cfootball.htm"
+webpage <- read_html(url)
+
+table_nodes <- webpage %>%
+  html_nodes("body div center table tr td div center table")
+
+# Initialize empty vectors to store team names and ratings
+teams <- c()
+ratings <- c()
+
+# Loop through each table row and extract the relevant data
+for (row in table_nodes) {
+  # Extract team name and rating
+  team_name <- row %>% html_node("td[width='96'] font") %>% html_text(trim = TRUE)
+  rating <- row %>% html_node("td[align='right'][width='26'] font") %>% html_text(trim = TRUE)
+  
+  # Append to vectors
+  teams <- c(teams, team_name)
+  ratings <- c(ratings, rating)
+}
+
+# Create a dataframe
+pigskin <- data.frame(team = teams, Rating = ratings, stringsAsFactors = FALSE)
+pigskin <- pigskin[!is.na(pigskin$team), ]
+pigskin$Rating <- as.numeric(pigskin$Rating)
+pigskin <- pigskin %>% arrange(desc(Rating))
+```
+
+```{r}
+url <- "http://sagarin.com/sports/cfsend.htm#Top_of_Page"
+
+# Read the HTML content from the webpage
+webpage <- read_html(url)
+
+# Extract the text content from the specified HTML path
+content <- webpage %>%
+  html_node("body b pre") %>%
+  html_text()
+
+# Split the content by lines
+lines <- strsplit(content, "\r\n")[[1]]
+
+# Filter out lines that contain team data (these lines start with a rank number)
+team_lines <- lines[grepl("^\\s*\\d+\\s", lines)]
+
+# Initialize empty vectors to store the extracted data
+team_names <- c()
+first_ratings <- c()
+golden_mean_ratings <- c()
+
+# Loop through each line and extract the required information
+for (line in team_lines) {
+  # Extract the team name, allowing for special characters, and excluding the division identifier
+  team_name <- str_trim(str_extract(line, "\\d+\\s+([A-Za-z'\\-\\&\\(\\)\\.]+(?:\\s+[A-Za-z'\\-\\&\\(\\)\\.]+)*)(?=\\s+[A-Za]{1,2}\\s*=)"))
+
+  # Extract the first rating (the number after the 'A', 'AA', or 'Aa' and '=' symbols)
+  rating_match <- str_extract(line, "[A-Za]{1,2}\\s*=\\s*\\d+\\.\\d+")
+  first_rating <- as.numeric(str_extract(rating_match, "\\d+\\.\\d+"))
+
+  # Extract the Golden Mean rating (this is the 3rd number after a '|')
+  split_line <- strsplit(line, "\\|")[[1]]
+  golden_mean_rating <- as.numeric(str_trim(str_extract(split_line[4], "\\d+\\.\\d+")))
+
+  # Store the extracted values
+  team_names <- c(team_names, team_name)
+  first_ratings <- c(first_ratings, first_rating)
+  golden_mean_ratings <- c(golden_mean_ratings, golden_mean_rating)
+}
+
+# Combine the extracted values into a dataframe
+sagarin <- data.frame(team = team_names, Rating = first_ratings, GoldenMean = golden_mean_ratings)
+sagarin$team <- gsub("^\\d+\\s+", "", sagarin$team)
+sagarin <- sagarin[!is.na(sagarin$team), ]
+```
+
+```{r}
+sagarin$team[sagarin$team == "Appalachian State"] <- "App State"
+sagarin$team[sagarin$team == "Ark.-Pine Bluff"] <- "Arkansas-Pine Bluff"
+sagarin$team[sagarin$team == "Army West Point"] <- "Army"
+sagarin$team[sagarin$team == "Cal Poly-SLO"] <- "Cal Poly"
+sagarin$team[sagarin$team == "Fla. International"] <- "Florida International"
+sagarin$team[sagarin$team == "Grambling State"] <- "Grambling"
+sagarin$team[sagarin$team == "LIU Post"] <- "Long Island University"
+sagarin$team[sagarin$team == "Louisiana-Lafayette"] <- "Louisiana"
+sagarin$team[sagarin$team == "McNeese State"] <- "McNeese"
+sagarin$team[sagarin$team == "Miami-Florida"] <- "Miami"
+sagarin$team[sagarin$team == "Miami-Ohio"] <- "Miami (OH)"
+sagarin$team[sagarin$team == "Monmouth-NJ"] <- "Monmouth"
+sagarin$team[sagarin$team == "Nicholls State"] <- "Nicholls"
+sagarin$team[sagarin$team == "NC A&T"] <- "North Carolina A&T"
+sagarin$team[sagarin$team == "NC Central"] <- "North Carolina Central"
+sagarin$team[sagarin$team == "Mississippi"] <- "Ole Miss"
+sagarin$team[sagarin$team == "Sam Houston State"] <- "Sam Houston"
+sagarin$team[sagarin$team == "San Jose State"] <- "San José State"
+sagarin$team[sagarin$team == "SC State"] <- "South Carolina State"
+sagarin$team[sagarin$team == "SE Missouri State"] <- "Southeast Missouri State"
+sagarin$team[sagarin$team == "Saint Francis-Pa."] <- "St. Francis (PA)"
+sagarin$team[sagarin$team == "Albany-NY"] <- "UAlbany"
+sagarin$team[sagarin$team == "Central Florida(UCF)"] <- "UCF"
+sagarin$team[sagarin$team == "Connecticut"] <- "UConn"
+sagarin$team[sagarin$team == "LouisianaMonroe(ULM)"] <- "UL Monroe"
+sagarin$team[sagarin$team == "Southern California"] <- "USC"
+sagarin$team[sagarin$team == "Tennessee-Martin"] <- "UT Martin"
+sagarin$team[sagarin$team == "Texas A&M-Commerce"] <- "East Texas A&M"
+
+games <- games %>% 
+  mutate(game_date = as.Date(game_date))
+
+# Filter rows based on the date range
+games <- games %>%
+  left_join(sagarin %>% select(team, Rating), 
+            by = c("home_team_location" = "team")) %>%
+  rename(home_rating = Rating) %>%
+  left_join(sagarin %>% select(team, Rating), 
+            by = c("away_team_location" = "team")) %>%
+  rename(away_rating = Rating) %>%
+  mutate(home_rating = ifelse(neutral == 0, home_rating + 2.45, home_rating)) %>%
+  mutate(home_spread = (home_rating - away_rating)*-1) %>%
+  mutate(ThrillScore = 0.5*(home_rating + away_rating) - abs(home_spread))
+games$home_spread<- round(games$home_spread,digits = 2)
+
+games <- games %>%
+  mutate(week = case_when(
+    game_date == as.Date("2024-08-24") ~ 0,
+    game_date >= as.Date("2024-08-29") & game_date <= as.Date("2024-09-02") ~ 1,
+    game_date >= as.Date("2024-09-06") & game_date <= as.Date("2024-09-07") ~ 2,
+    game_date >= as.Date("2024-09-12") & game_date <= as.Date("2024-09-14") ~ 3,
+    game_date >= as.Date("2024-09-19") & game_date <= as.Date("2024-09-21") ~ 4,
+    game_date >= as.Date("2024-09-26") & game_date <= as.Date("2024-09-28") ~ 5,
+    game_date >= as.Date("2024-10-03") & game_date <= as.Date("2024-10-05") ~ 6,
+    game_date >= as.Date("2024-10-08") & game_date <= as.Date("2024-10-12") ~ 7,
+    game_date >= as.Date("2024-10-15") & game_date <= as.Date("2024-10-19") ~ 8,
+    game_date >= as.Date("2024-10-22") & game_date <= as.Date("2024-10-26") ~ 9,
+    game_date >= as.Date("2024-10-29") & game_date <= as.Date("2024-11-02") ~ 10,
+    game_date >= as.Date("2024-11-05") & game_date <= as.Date("2024-11-09") ~ 11,
+    game_date >= as.Date("2024-11-12") & game_date <= as.Date("2024-11-16") ~ 12,
+    game_date >= as.Date("2024-11-19") & game_date <= as.Date("2024-11-23") ~ 13,
+    game_date >= as.Date("2024-11-26") & game_date <= as.Date("2024-11-30") ~ 14,
+    game_date == as.Date("2024-12-14") ~ 16,
+    TRUE ~ NA_integer_ # Catch any dates that don't match with NA
+  ))
+
+games <- games %>% select(c(1,2,12,3,8,4,5,9,6,10,11,7))
+```
+
+```{r}
+bet13 <- cfbd_betting_lines(
+  year = c(2013)
+)
+bet14 <- cfbd_betting_lines(
+  year = c(2014)
+)
+bet15 <- cfbd_betting_lines(
+  year = c(2015)
+)
+bet16 <- cfbd_betting_lines(
+  year = c(2016)
+)
+bet17 <- cfbd_betting_lines(
+  year = c(2017)
+)
+bet18 <- cfbd_betting_lines(
+  year = c(2018)
+)
+bet19 <- cfbd_betting_lines(
+  year = c(2019)
+)
+bet20 <- cfbd_betting_lines(
+  year = c(2020)
+)
+bet21 <- cfbd_betting_lines(
+  year = c(2021)
+)
+bet22 <- cfbd_betting_lines(
+  year = c(2022)
+)
+bet23 <- cfbd_betting_lines(
+  year = c(2023)
+)
+bet1323 <- bind_rows(bet13, bet14, bet15, bet16, bet17, bet18, bet19, bet20, bet21, bet22, bet23)
+bet1323 <- bet1323 %>%
+           filter(provider == "DraftKings" | provider == "consensus") %>%
+           mutate(home_win = ifelse(home_score>away_score,1,0)) %>%
+           select(c(1,2,5,6,8,9,11,13,20)) %>%
+           distinct(game_id, .keep_all = TRUE) %>%
+           mutate(spread = as.numeric(spread)) %>%
+           arrange(start_date)
+bet1323 <- bet1323[!is.na(bet1323$spread), ]
+
+average_win_prob1 <- bet1323 %>%
+                    group_by(spread) %>%
+                    summarise(average_win_prob = mean(home_win))
+
+ggplot(average_win_prob1, aes(x = spread, y = average_win_prob)) +
+  geom_point(color = "blue") +
+  labs(title = "Average Win Probability by Spread",
+       x = "Spread",
+       y = "Average Win Probability") +
+  theme_minimal()
+
+fit <- nls(average_win_prob ~ 1 / (1 + exp(-a * (spread - b))),
+           data = average_win_prob1,
+           start = list(a = 0.1, b = 0))
+
+# Plot the fitted curve
+plot(average_win_prob1$spread, average_win_prob1$average_win_prob)
+lines(average_win_prob1$spread, predict(fit), col = "red")
+
+predict_win_prob <- function(spread_value) {
+  # Create a data frame with the new spread value
+  new_data <- data.frame(spread = spread_value)
+  
+  # Predict using the fitted model
+  predicted_win_prob <- predict(fit, new_data)
+  
+  return(predicted_win_prob)
+}
+
+occurrences <- table(bet1323$spread)
+
+# Convert the table to a data frame
+sorted_occurrences_df <- as.data.frame(occurrences)
+
+sorted_occurrences_df$Var1 <- as.numeric(as.character(sorted_occurrences_df$Var1))
+
+# Calculate cumulative frequency
+sorted_occurrences_df <- sorted_occurrences_df %>%
+  arrange(Var1) %>%
+  mutate(cumsum_freq = cumsum(Freq))
+
+# Initialize variables
+bin_boundaries <- numeric()
+current_bin_start <- sorted_occurrences_df$Var1[1]
+current_bin_end <- sorted_occurrences_df$Var1[1]
+current_bin_freq <- 0
+
+# Loop through rows to determine bin boundaries
+for (i in seq_len(nrow(sorted_occurrences_df))) {
+  current_bin_freq <- current_bin_freq + sorted_occurrences_df$Freq[i]
+  current_bin_end <- sorted_occurrences_df$Var1[i]
+  
+  if (current_bin_freq >= 100) {
+    bin_boundaries <- c(bin_boundaries, current_bin_start, current_bin_end)
+    current_bin_start <- sorted_occurrences_df$Var1[i + 1]
+    current_bin_freq <- 0
+  }
+}
+
+# Add the last bin if there are remaining values
+if (current_bin_freq > 0) {
+  bin_boundaries <- c(bin_boundaries, current_bin_start, sorted_occurrences_df$Var1[nrow(sorted_occurrences_df)])
+}
+
+bins_df1 <- data.frame(
+  lower = bin_boundaries[seq(1, length(bin_boundaries), by = 2)],
+  upper = bin_boundaries[seq(2, length(bin_boundaries), by = 2)]
+)
+
+get_bin <- function(spread, lower_bounds, upper_bounds) {
+  bin <- findInterval(spread, vec = c(lower_bounds, upper_bounds[length(upper_bounds)]), rightmost.closed = TRUE)
+  return(bin)
+}
+
+bet1323 <- bet1323 %>%
+  mutate(bin = get_bin(spread, bins_df1$lower, bins_df1$upper))
+
+average_win_prob <- bet1323 %>%
+                    group_by(bin) %>%
+                    summarise(average_win_prob = mean(home_win))
+
+bins_df1$average_win_prob <- average_win_prob$average_win_prob
+```
+
+```{r}
+bet1323 <- bind_rows(bet13, bet14, bet15, bet16, bet17, bet18, bet19, bet20, bet21, bet22, bet23)
+bet1323 <- bet1323[!is.na(bet1323$home_moneyline), ]
+bet1323 <- bet1323 %>%
+           filter(provider == "Bovada") %>%
+           mutate(home_win = ifelse(home_score>away_score,1,0)) %>%
+           select(c(1,2,5,6,8,9,11,13,18,20)) %>%
+           distinct(game_id, .keep_all = TRUE) %>%
+           mutate(home_moneyline = as.numeric(home_moneyline)) %>%
+           arrange(start_date)
+
+bet1323 <- bet1323 %>%
+  mutate(win_prob = ifelse(home_moneyline > 0,
+                               100/(home_moneyline + 100),
+                               home_moneyline/(home_moneyline - 100))) %>%
+  mutate(decimal_odds = ifelse(home_moneyline > 0,
+                               (home_moneyline / 100) + 1,
+                               (((100 / home_moneyline) - 1)*-1))) %>%
+  mutate(spread = ifelse(game_id == 401405059, -13, spread))
+
+bet1323$spread <- as.numeric(bet1323$spread)
+
+ggplot(bet1323, aes(x = spread, y = win_prob)) +
+  geom_point(color = "blue") +
+  labs(title = "Expected Win Probability by Spread",
+       x = "Spread",
+       y = "Expected Win Probability") +
+  theme_minimal()
+
+occurrences <- table(bet1323$spread)
+
+# Convert the table to a data frame
+sorted_occurrences_df <- as.data.frame(occurrences)
+
+sorted_occurrences_df$Var1 <- as.numeric(as.character(sorted_occurrences_df$Var1))
+
+# Calculate cumulative frequency
+sorted_occurrences_df <- sorted_occurrences_df %>%
+  arrange(Var1) %>%
+  mutate(cumsum_freq = cumsum(Freq))
+
+# Initialize variables
+bin_boundaries <- numeric()
+current_bin_start <- sorted_occurrences_df$Var1[1]
+current_bin_end <- sorted_occurrences_df$Var1[1]
+current_bin_freq <- 0
+
+# Loop through rows to determine bin boundaries
+for (i in seq_len(nrow(sorted_occurrences_df))) {
+  current_bin_freq <- current_bin_freq + sorted_occurrences_df$Freq[i]
+  current_bin_end <- sorted_occurrences_df$Var1[i]
+  
+  if (current_bin_freq >= 20) {
+    bin_boundaries <- c(bin_boundaries, current_bin_start, current_bin_end)
+    current_bin_start <- sorted_occurrences_df$Var1[i + 1]
+    current_bin_freq <- 0
+  }
+}
+
+# Add the last bin if there are remaining values
+if (current_bin_freq > 0) {
+  bin_boundaries <- c(bin_boundaries, current_bin_start, sorted_occurrences_df$Var1[nrow(sorted_occurrences_df)])
+}
+
+bins_df <- data.frame(
+  lower = bin_boundaries[seq(1, length(bin_boundaries), by = 2)],
+  upper = bin_boundaries[seq(2, length(bin_boundaries), by = 2)]
+)
+
+get_bin <- function(spread, lower_bounds, upper_bounds) {
+  bin <- findInterval(spread, vec = c(lower_bounds, upper_bounds[length(upper_bounds)]), rightmost.closed = TRUE)
+  return(bin)
+}
+
+bet1323 <- bet1323 %>%
+  mutate(bin = get_bin(spread, bins_df$lower, bins_df$upper))
+
+average_odds <- bet1323 %>%
+                    group_by(bin) %>%
+                    summarise(average_decimal_odds = mean(decimal_odds))
+
+bins_df$average_decimal_odds <- average_odds$average_decimal_odds
+bins_df <- bins_df %>% 
+           mutate(american_odds = ifelse(average_decimal_odds >= 2,
+                                        (average_decimal_odds - 1)*100,
+                                        -100/(average_decimal_odds - 1))) %>%
+           mutate(win_prob = ifelse(american_odds > 0,
+                                    100/(american_odds + 100),
+                                    american_odds/(american_odds - 100)))
+new_row <- data.frame(lower = -70, upper = -38.5, average_decimal_odds = 1.005, american_odds = -15000, win_prob = 0.995)
+bins_df <- rbind(new_row, bins_df)
+bins_df[nrow(bins_df) + 1, ] <- c(35, 70, 30, 2750, .0075)
+
+find_win_prob <- function(spread, bins_df) {
+  # Check if the spread falls within the lower and upper bounds
+  row <- bins_df %>%
+    filter(spread >= lower & spread <= upper)
+  
+  # If an exact match is found, return the win_prob from that row
+  if(nrow(row) == 1) {
+    return(row$win_prob)
+  } else {
+    # If no exact match, find the closest row (based on distance from spread)
+    closest_row <- bins_df %>%
+      mutate(distance = pmin(abs(lower - spread), abs(upper - spread))) %>%
+      arrange(distance) %>%
+      slice(1)
+    
+    return(closest_row$win_prob)
+  }
+}
+
+# Apply the function to each row in the games dataframe
+games <- games %>%
+  mutate(home_win_prob = map_dbl(home_spread, find_win_prob, bins_df = bins_df))
+```
+
+```{r}
+conference_mapping <- list(
+  ACC = c("Boston College",
+          "California",
+          "Clemson",
+          "Duke",
+          "Florida State", 
+          "Georgia Tech",
+          "Louisville",
+          "Miami",
+          "NC State",
+          "North Carolina", 
+          "Pittsburgh",
+          "SMU",
+          "Stanford",
+          "Syracuse",
+          "Virginia",
+          "Virginia Tech", 
+          "Wake Forest"),
+  American = c("Army",
+               "Charlotte",
+               "East Carolina",
+               "Florida Atlantic",
+               "Memphis",
+               "Navy",
+               "North Texas",
+               "Rice",
+               "South Florida",
+               "Temple",
+               "Tulane",
+               "Tulsa",
+               "UAB",
+               "UTSA"),
+    `Big 12` = c("Arizona",
+                 "Arizona State",
+                 "Baylor",
+                 "BYU",
+                 "Cincinnati",
+                 "Colorado",
+                 "Houston",
+                 "Iowa State",
+                 "Kansas",
+                 "Kansas State",
+                 "Oklahoma State",
+                 "TCU",
+                 "Texas Tech",
+                 "UCF",
+                 "Utah",
+                 "West Virginia"),
+  `Big Ten` = c("Illinois",
+                "Indiana",
+                "Iowa",
+                "Maryland",
+                "Michigan",
+                "Michigan State",
+                "Minnesota",
+                "Nebraska",
+                "Northwestern",
+                "Ohio State",
+                "Oregon",
+                "Penn State",
+                "Purdue",
+                "Rutgers",
+                "UCLA",
+                "USC",
+                "Washington",
+                "Wisconsin"),
+  CUSA = c("Florida International",
+           "Jacksonville State",
+           "Kennesaw State",
+           "Liberty",
+           "Louisiana Tech",
+           "Middle Tennessee",
+           "New Mexico State",
+           "Sam Houston",
+           "UTEP",
+           "Western Kentucky"),
+  Independent = c("Notre Dame",
+                  "Massachusetts",
+                  "UConn"),
+  MAC = c("Akron",
+          "Ball State",
+          "Bowling Green",
+          "Buffalo",
+          "Central Michigan",
+          "Eastern Michigan",
+          "Kent State",
+          "Miami (OH)",
+          "Northern Illinois",
+          "Ohio",
+          "Toledo",
+          "Western Michigan"),
+  `Mountain West` = c("Air Force",
+                      "Boise State",
+                      "Colorado State",
+                      "Fresno State",
+                      "Hawai'i",
+                      "Nevada",
+                      "New Mexico",
+                      "San Diego State",
+                      "San José State",
+                      "UNLV",
+                      "Utah State",
+                      "Wyoming"),
+  `Pac-12` = c("Oregon State", "Washington State"),
+  SEC = c("Alabama",
+          "Arkansas",
+          "Auburn",
+          "Florida",
+          "Georgia",
+          "Kentucky", 
+          "LSU",
+          "Mississippi State",
+          "Missouri",
+          "Oklahoma",
+          "Ole Miss",
+          "South Carolina",
+          "Tennessee",
+          "Texas",
+          "Texas A&M",
+          "Vanderbilt"),
+  `Sun Belt` = c("App State",
+                 "Arkansas State",
+                 "Coastal Carolina",
+                 "Georgia Southern",
+                 "Georgia State",
+                 "James Madison",
+                 "Louisiana",
+                 "UL Monroe",
+                 "Marshall",
+                 "Old Dominion",
+                 "South Alabama",
+                 "Southern Miss",
+                 "Texas State",
+                 "Troy")
+)
+
+# Create a function to map teams to conferences
+map_conference <- function(team_name) {
+  for (conference in names(conference_mapping)) {
+    if (team_name %in% conference_mapping[[conference]]) {
+      return(conference)
+    }
+  }
+  return(NA)  # If no match is found
+}
+
+# Apply the mapping function to the games dataframe
+games <- games %>%
+  mutate(
+    home_conf = sapply(home_team_location, map_conference),
+    away_conf = sapply(away_team_location, map_conference)
+  )
+
+get_conference <- function(team, conference_mapping) {
+  for (conf in names(conference_mapping)) {
+    if (team %in% conference_mapping[[conf]]) {
+      return(conf)
+    }
+  }
+  return(NA)  # Return NA if the team is not found in the mapping
+}
+
+# Get unique teams from both home and away locations
+teams <- unique(c(games$home_team_location, games$away_team_location))
+
+# Initialize an empty dataframe to store results
+conf_game_summary <- data.frame(
+  team = character(),
+  conference_games = numeric(),
+  conference = character(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each team to count conference games
+for (team in teams) {
+  # Count conference games where the team is either home or away
+  conf_game_count <- sum(games$conf_game[games$home_team_location == team | games$away_team_location == team])
+  
+  # Get the team's conference
+  conference <- get_conference(team, conference_mapping)
+  
+  # Append the result to the dataframe
+  conf_game_summary <- rbind(conf_game_summary, data.frame(
+    team = team,
+    conference_games = conf_game_count,
+    conference = conference,
+    stringsAsFactors = FALSE
+  ))
+}
+conf_game_summary <- conf_game_summary[order(conf_game_summary$conference, conf_game_summary$team), ]
+conf_game_summary <- conf_game_summary[!is.na(conf_game_summary$conference), ]
+
+games <- games %>%
+         mutate(conf_game = ifelse(home_conf == away_conf,1,0)) %>%
+         mutate(conf_game = ifelse(is.na(conf_game), 0, conf_game)) %>%
+  mutate(conf_game = case_when(
+    home_team_location == "Kansas State" & away_team_location == "Arizona" ~ 0,
+    home_team_location == "Utah" & away_team_location == "Baylor" ~ 0,
+    home_team_location == "Army" & away_team_location == "Navy" ~ 0,
+    home_team_location == "Massachusetts" & away_team_location == "UConn" ~ 0,
+    TRUE ~ conf_game # Keep original value if none of the conditions are met
+  ))
+```
+
+Tiebreaker functions (2-7)
+```{r}
+#Two-Way Tiebreaker Function
+tiebreaker_2_teams <- function(team1, team2, games1, standings) {
+  match2 <- games1[((games1$home_team_location == team1 & games1$away_team_location == team2) | 
+                  (games1$home_team_location == team2 & games1$away_team_location == team1)), ]
+  
+  if (nrow(match2) > 0) {
+    if (match2$home_team_location == team1 && match2$home_win == 1) {
+      return(team1)  # team1 won
+    } else if (match2$home_team_location == team2 && match2$home_win == 1) {
+      return(team2)  # team2 won
+    } else if (match2$home_team_location == team1 && match2$home_win == 0) {
+      return(team2)  # team2 won
+    } else {
+      return(team1)  # team1 won
+    }
+  }
+  
+  team1games <- games1[(games1$home_team_location == team1 | games1$away_team_location == team1), ]
+  team2games <- games1[(games1$home_team_location == team2 | games1$away_team_location == team2), ]
+  
+  team1opps <- c(team1games$away_team_location[team1games$home_team_location == team1], 
+                    team1games$home_team_location[team1games$away_team_location == team1])
+  team2opps <- c(team2games$away_team_location[team2games$home_team_location == team2], 
+                    team2games$home_team_location[team2games$away_team_location == team2])
+  
+  common_opps <- intersect(team1opps, team2opps)
+  
+  team1games_filtered <- team1games[team1games$home_team_location %in% common_opps | 
+                                  team1games$away_team_location %in% common_opps, ]
+  team2games_filtered <- team2games[team2games$home_team_location %in% common_opps | 
+                                  team2games$away_team_location %in% common_opps, ]
+  
+  team1_wins <- sum((team1games_filtered$home_team_location == team1 & team1games_filtered$home_win == 1) +
+                    (team1games_filtered$away_team_location == team1 & team1games_filtered$home_win == 0))
+  team2_wins <- sum((team2games_filtered$home_team_location == team2 & team2games_filtered$home_win == 1) +
+                    (team2games_filtered$away_team_location == team2 & team2games_filtered$home_win == 0))
+  
+    if (team1_wins > team2_wins) {
+    return(team1)
+  } else if (team2_wins > team1_wins) {
+    return(team2)
+  }
+  
+  team1games_conf <- team1games[team1games$conf_game == 1, ]
+  team2games_conf <- team2games[team2games$conf_game == 1, ]
+  
+  team1opps_conf <- c(team1games_conf$away_team_location[team1games_conf$home_team_location == team1], 
+                    team1games_conf$home_team_location[team1games_conf$away_team_location == team1])
+  team2opps_conf <- c(team2games_conf$away_team_location[team2games_conf$home_team_location == team2], 
+                    team2games_conf$home_team_location[team2games_conf$away_team_location == team2])
+  
+  team1opps_confwins <- sum(standings$conf_wins[standings$team %in% team1opps_conf])
+  team2opps_confwins <- sum(standings$conf_wins[standings$team %in% team2opps_conf])
+
+    if (team1opps_confwins > team2opps_confwins) {
+    return(team1)
+  } else if (team2opps_confwins > team1opps_confwins) {
+    return(team2)
+  } 
+    else {
+    tied_teams <- c(team1, team2)
+    # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+    tied_team_indices <- match(tied_teams, sagarin$team)
+    best_team_ratings <- sagarin$Rating[tied_team_indices]
+    # Find the team with the highest rating
+    best_team_index <- which.max(best_team_ratings)
+    # Return the team corresponding to the highest Sagarin rating
+    return(tied_teams[best_team_index])
+  }
+}
+
+#Three-Way Tiebreaker Function
+tiebreaker_3_teams <- function(team1, team2, team3, games1, standings) {
+  teams <- c(team1, team2, team3)
+  
+  ### RULE 1: Combined head-to-head win-percentage among the tied teams if all tied teams are common opponents. 
+  # Finds games where any of the tied teams matchup
+  match3 <- games1[games1$home_team_location %in% teams & games1$away_team_location %in% teams, ]
+  # Names wins variables for assigning after calculation
+  win_vars <- c("team1_wins", "team2_wins", "team3_wins")
+  # Loop through the teams and calculate the wins for each
+  for (i in seq_along(teams)) {
+    wins <- sum((match3$home_team_location == teams[i] & match3$home_win == 1) +
+                (match3$away_team_location == teams[i] & match3$home_win == 0))
+    # Dynamically assign the wins to team1_wins, team2_wins, etc.
+    assign(win_vars[i], wins)
+  }
+  # Function for finding max total games if each team played all other tied teams
+  total_games <- function(x) {
+    return(x * (x - 1) / 2)
+  }
+  
+  team_wins <- c(team1_wins, team2_wins, team3_wins)
+  # If all tied teams are common opponents
+  if (nrow(match3) == total_games(3)) {
+    # Find the maximum number of wins
+    max_wins <- max(team_wins)
+    # Find the indices of teams with the maximum wins
+    max_wins_indices <- which(team_wins == max_wins)
+    # Check if there is exactly one team with the maximum number of wins
+    if (length(max_wins_indices) == 1) {
+      # If only one team has the maximum wins, return that team
+      return(teams[max_wins_indices])
+    }
+  }
+  
+  ### RULE 2a: If all the tied teams are not common opponents, the tied team that defeated each of the other tied teams.
+  # Names games variables for assigning after calculation
+  game_vars <- c("team1_games", "team2_games", "team3_games")
+  # Loop through the teams and calculate the games for each (these are only games against other tied teams)
+  for (i in seq_along(teams)) {
+    games <- sum(match3$home_team_location == teams[i] | match3$away_team_location == teams[i])
+    # Dynamically assign the games to team1_games, team2_games, etc.
+    assign(game_vars[i], games)
+  }
+
+  team_games <- c(team1_games, team2_games, team3_games)
+  # If all the tied teams are not common opponents
+  if (nrow(match3) < total_games(3)) {
+    # Finds the team that defeated each of the other tied teams
+    if (any(team_wins == 2)) {
+      return(teams[which(team_wins == 2)])
+    }
+    
+    ### RULE 2b: If all the tied teams are not common opponents, no tied team defeated each of the other tied teams,
+    ### but a tied team lost to each of the other tied teams, such team shall be eliminated and removed from the tie. 
+    # Finds the team lost to each of the other tied teams
+    if (any(team_wins == 0 & team_games == 2)) {
+      remove <- teams[which(team_wins == 0 & team_games == 2)]
+    }
+  }
+  # With the team that lost to both other tied teams in the remove variable it can be 
+  # removed from the tiebreaker and the other two teams can restart with the two team tiebreaker
+  if (exists("remove") && is.character(remove) && length(remove) > 0) {
+    teams_removed <- teams[!teams %in% remove]
+    return(tiebreaker_2_teams(teams_removed[1], teams_removed[2], games1, standings)) 
+  }
+  
+  ### RULE 3: Win-percentage versus all common opponents. 
+  # Names the 2nd games variables for assigning after calculation
+  game_vars2 <- c("team1games", "team2games", "team3games")
+  # Loop through the teams and filter the games for each team
+  for (i in seq_along(teams)) {
+    games2 <- games1[games1$home_team_location == teams[i] | games1$away_team_location == teams[i], ]
+    # Dynamically assign the games to team1games, team2games, etc.
+    assign(game_vars2[i], games2)
+  }
+  # Names the opponent variables for assigning after calculation
+  opponent_vars <- c("team1opps", "team2opps", "team3opps")
+  # Loop through the teams and find the opponents for each team
+  for (i in seq_along(teams)) {
+    # Get the games for the current team
+    current_games <- get(game_vars2[i])
+    # Find opponents
+    opponents <- c(
+      current_games$away_team_location[current_games$home_team_location == teams[i]], 
+      current_games$home_team_location[current_games$away_team_location == teams[i]]
+    )
+    # Dynamically assign the opponents to team1opps, team2opps, etc.
+    assign(opponent_vars[i], opponents)
+  }
+  # Finds the common opponents for each of the tied teams
+  common_opps <- Reduce(intersect, list(team1opps, team2opps, team3opps))
+  # Initialize empty lists to store filtered games and wins
+  filtered_games <- list()
+  wins <- numeric(length(teams))
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games2 <- list(team1games, team2games, team3games)
+  # Loop through the teams to filter games where they played a common opponent and calculate wins
+  for (i in seq_along(teams)) {
+    team_games_filtered <- team_games2[[i]][team_games2[[i]]$home_team_location %in% common_opps | 
+                                             team_games2[[i]]$away_team_location %in% common_opps, ]
+    # Store the filtered games
+    filtered_games[[i]] <- team_games_filtered
+    # Calculate wins
+    wins[i] <- sum((team_games_filtered$home_team_location == teams[i] & team_games_filtered$home_win == 1) +
+                  (team_games_filtered$away_team_location == teams[i] & team_games_filtered$home_win == 0))
+  }
+  # Assign filtered games with the "team(blank)games_filtered" format
+  for (i in seq_along(teams)) {
+    assign(paste0("team", i, "games_filtered"), filtered_games[[i]])
+  }
+  # Wins for each team in these common games are stored using the wins vector
+  team1_wins <- wins[1]
+  team2_wins <- wins[2]
+  team3_wins <- wins[3]
+  
+  wins <- c(team1_wins, team2_wins, team3_wins)
+  # Find the maximum number of wins
+  max_wins <- max(wins)
+  # Find the indices of teams with the maximum wins
+  max_indices <- which(wins == max_wins)
+  # Check if exactly one team has the maximum number of wins
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum wins, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 4: Combined win-percentage of conference opponents.
+  # Filters each teams' games to only their conference games
+  for (i in seq_along(teams)) {
+    filtered_games <- team_games2[[i]][team_games2[[i]]$conf_game == 1, ]
+    assign(paste0("team", i, "games_conf"), filtered_games)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games_conf <- list(team1games_conf, team2games_conf, team3games_conf)
+  # Loop through the teams and find conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    team_games <- team_games_conf[[i]]
+    # Extract opponents
+    opps_conf <- c(team_games$away_team_location[team_games$home_team_location == team], 
+                  team_games$home_team_location[team_games$away_team_location == team])
+    # Dynamically assign the opponents to a variable name
+    assign(paste0("team", i, "opps_conf"), opps_conf)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_opps_conf <- list(team1opps_conf, team2opps_conf, team3opps_conf)
+  # Loop through the teams and calculate the conference win percentage for each teams conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    opps_conf <- team_opps_conf[[i]]
+    # Calculate wins and losses
+    conf_wins_sum <- sum(standings$conf_wins[standings$team %in% opps_conf])
+    conf_losses_sum <- sum(standings$conf_losses[standings$team %in% opps_conf])
+    # Calculate win percentage
+    win_pct <- conf_wins_sum / (conf_wins_sum + conf_losses_sum)
+    # Dynamically assign the win percentage to a variable name
+    assign(paste0("team", i, "opps_confwinpct"), win_pct)
+  }
+  # Create a list of conference opponent conference win percentages
+  win_pct_list <- c(team1opps_confwinpct, team2opps_confwinpct, team3opps_confwinpct)
+  # Find the maximum win_pct
+  max_win_pct <- max(win_pct_list)
+  # Find the indices of teams with the maximum win_pct
+  max_indices <- which(win_pct_list == max_win_pct)
+  # Check if exactly one team has the maximum win_pct
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum win_pct, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 5: The tied team with the highest ranking by the Rating metric provided by Sagarin. 
+  # Get the team tied by conference opponent conference win percentage
+  tied_teams <- c(teams[max_indices])
+  # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+  tied_team_indices <- match(tied_teams, sagarin$team)
+  best_team_ratings <- sagarin$Rating[tied_team_indices]
+  # Find the team with the highest rating
+  best_team_index <- which.max(best_team_ratings)
+  # Return the team corresponding to the highest Sagarin rating
+  return(tied_teams[best_team_index])
+}
+
+#Four-Way Tiebreaker Function
+tiebreaker_4_teams <- function(team1, team2, team3, team4, games1, standings) {
+  teams <- c(team1, team2, team3, team4)
+  
+  ### RULE 1: Combined head-to-head win-percentage among the tied teams if all tied teams are common opponents. 
+  # Finds games where any of the tied teams matchup
+  match4 <- games1[games1$home_team_location %in% teams & games1$away_team_location %in% teams, ]
+  # Names wins variables for assigning after calculation
+  win_vars <- c("team1_wins", "team2_wins", "team3_wins", "team4_wins")
+  # Loop through the teams and calculate the wins for each
+  for (i in seq_along(teams)) {
+    wins <- sum((match4$home_team_location == teams[i] & match4$home_win == 1) +
+                (match4$away_team_location == teams[i] & match4$home_win == 0))
+    # Dynamically assign the wins to team1_wins, team2_wins, etc.
+    assign(win_vars[i], wins)
+  }
+  # Function for finding max total games if each team played all other tied teams
+  total_games <- function(x) {
+    return(x * (x - 1) / 2)
+  }
+  
+  team_wins <- c(team1_wins, team2_wins, team3_wins, team4_wins)
+  # If all tied teams are common opponents
+  if (nrow(match4) == total_games(4)) {
+    # Find the maximum number of wins
+    max_wins <- max(team_wins)
+    # Find the indices of teams with the maximum wins
+    max_wins_indices <- which(team_wins == max_wins)
+    # Check if there is exactly one team with the maximum number of wins
+    if (length(max_wins_indices) == 1) {
+      # If only one team has the maximum wins, return that team
+      return(teams[max_wins_indices])
+    }
+  }
+
+  ### RULE 2a: If all the tied teams are not common opponents, the tied team that defeated each of the other tied teams.
+  # Names games variables for assigning after calculation
+  game_vars <- c("team1_games", "team2_games", "team3_games", "team4_games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games <- sum(match4$home_team_location == teams[i] | match4$away_team_location == teams[i])
+    # Dynamically assign the games to team1_games, team2_games, etc.
+    assign(game_vars[i], games)
+  }
+
+  team_games <- c(team1_games, team2_games, team3_games, team4_games)
+  # If all the tied teams are not common opponents
+  if (nrow(match4) < total_games(4)) {
+    # Finds the team that defeated all of the other tied teams
+    if (any(team_wins == 3)) {
+      return(teams[which(team_wins == 3)])
+    }
+    ### RULE 2b: If all the tied teams are not common opponents, no tied team defeated each of the other tied teams,
+    ### but a tied team lost to each of the other tied teams, such team shall be eliminated and removed from the tie. 
+    # Finds the team lost to each of the other tied teams
+    if (any(team_wins == 0 & team_games == 3)) {
+      remove <- teams[which(team_wins == 0 & team_games == 3)]
+    }
+  }
+  # With the team that lost to both other tied teams in the remove variable it can be 
+  # removed from the tiebreaker and the other two teams can restart with the two team tiebreaker
+  if (exists("remove") && is.character(remove) && length(remove) > 0) {
+    teams_removed <- teams[!teams %in% remove]
+    return(tiebreaker_3_teams(teams_removed[1], teams_removed[2], teams_removed[3], games1, standings)) 
+  }
+  ### RULE 3: Win-percentage versus all common opponents. 
+  # Names the 2nd games variables for assigning after calculation
+  game_vars2 <- c("team1games", "team2games", "team3games", "team4games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games2 <- games1[games1$home_team_location == teams[i] | games1$away_team_location == teams[i], ]
+    # Dynamically assign the games to team1games, team2games, etc.
+    assign(game_vars2[i], games2)
+  }
+  # Names the opponent variables for assigning after calculation
+  opponent_vars <- c("team1opps", "team2opps", "team3opps", "team4opps")
+  # Loop through the teams and find the opponents for each team
+  for (i in seq_along(teams)) {
+    # Get the games for the current team
+    current_games <- get(game_vars2[i])
+    # Find opponents
+    opponents <- c(
+      current_games$away_team_location[current_games$home_team_location == teams[i]], 
+      current_games$home_team_location[current_games$away_team_location == teams[i]]
+    )
+    # Dynamically assign the opponents to team1opps, team2opps, etc.
+    assign(opponent_vars[i], opponents)
+  }
+  # Finds the common opponents for each of the tied teams
+  common_opps <- Reduce(intersect, list(team1opps, team2opps, team3opps, team4opps))
+  # Initialize empty lists to store filtered games and wins
+  filtered_games <- list()
+  wins <- numeric(length(teams))
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games2 <- list(team1games, team2games, team3games, team4games)
+  # Loop through the teams to filter games where they played a common opponent and calculate wins
+  for (i in seq_along(teams)) {
+    team_games_filtered <- team_games2[[i]][team_games2[[i]]$home_team_location %in% common_opps | 
+                                             team_games2[[i]]$away_team_location %in% common_opps, ]
+    # Store the filtered games
+    filtered_games[[i]] <- team_games_filtered
+    # Calculate wins
+    wins[i] <- sum((team_games_filtered$home_team_location == teams[i] & team_games_filtered$home_win == 1) +
+                  (team_games_filtered$away_team_location == teams[i] & team_games_filtered$home_win == 0))
+  }
+  # Assign filtered games with the "team(blank)games_filtered" format
+  for (i in seq_along(teams)) {
+    assign(paste0("team", i, "games_filtered"), filtered_games[[i]])
+  }
+  # Wins for each team in these common games are stored using the wins vector
+  team1_wins <- wins[1]
+  team2_wins <- wins[2]
+  team3_wins <- wins[3]
+  team4_wins <- wins[4]
+  
+  wins <- c(team1_wins, team2_wins, team3_wins, team4_wins)
+   # Find the maximum number of wins
+  max_wins <- max(wins)
+  # Find the indices of teams with the maximum wins
+  max_indices <- which(wins == max_wins)
+  # Check if exactly one team has the maximum number of wins
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum wins, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 4: Combined win-percentage of conference opponents.
+  # Filters each teams' games to only their conference games
+  for (i in seq_along(teams)) {
+    filtered_games <- team_games2[[i]][team_games2[[i]]$conf_game == 1, ]
+    assign(paste0("team", i, "games_conf"), filtered_games)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games_conf <- list(team1games_conf, team2games_conf, team3games_conf, team4games_conf)
+  # Loop through the teams and find conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    team_games <- team_games_conf[[i]]
+    # Extract opponents
+    opps_conf <- c(team_games$away_team_location[team_games$home_team_location == team], 
+                  team_games$home_team_location[team_games$away_team_location == team])
+    # Dynamically assign the opponents to a variable name
+    assign(paste0("team", i, "opps_conf"), opps_conf)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_opps_conf <- list(team1opps_conf, team2opps_conf, team3opps_conf, team4opps_conf)
+  # Loop through the teams and calculate the conference win percentage for each teams conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    opps_conf <- team_opps_conf[[i]]
+    # Calculate wins and losses
+    conf_wins_sum <- sum(standings$conf_wins[standings$team %in% opps_conf])
+    conf_losses_sum <- sum(standings$conf_losses[standings$team %in% opps_conf])
+    # Calculate win percentage
+    win_pct <- conf_wins_sum / (conf_wins_sum + conf_losses_sum)
+    # Dynamically assign the win percentage to a variable name
+    assign(paste0("team", i, "opps_confwinpct"), win_pct)
+  }
+  # Create a list of conference opponent conference win percentages
+  win_pct_list <- c(team1opps_confwinpct, team2opps_confwinpct, team3opps_confwinpct, team4opps_confwinpct)
+  # Find the maximum win_pct
+  max_win_pct <- max(win_pct_list)
+  # Find the indices of teams with the maximum win_pct
+  max_indices <- which(win_pct_list == max_win_pct)
+  # Check if exactly one team has the maximum win_pct
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum win_pct, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 5: The tied team with the highest ranking by the Rating metric provided by Sagarin. 
+  # Get the team tied by conference opponent conference win percentage
+  tied_teams <- c(teams[max_indices])
+  # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+  tied_team_indices <- match(tied_teams, sagarin$team)
+  best_team_ratings <- sagarin$Rating[tied_team_indices]
+  # Find the team with the highest rating
+  best_team_index <- which.max(best_team_ratings)
+  # Return the team corresponding to the highest Sagarin rating
+  return(tied_teams[best_team_index])
+}
+
+#Five-Way Tiebreaker Function
+tiebreaker_5_teams <- function(team1, team2, team3, team4, team5, games1, standings) {
+  teams <- c(team1, team2, team3, team4, team5)
+  
+  ### RULE 1: Combined head-to-head win-percentage among the tied teams if all tied teams are common opponents. 
+  # Finds games where any of the tied teams matchup
+  match5 <- games1[games1$home_team_location %in% teams & games1$away_team_location %in% teams, ]
+  # Names wins variables for assigning after calculation
+  win_vars <- c("team1_wins", "team2_wins", "team3_wins", "team4_wins", "team5_wins")
+  # Loop through the teams and calculate the wins for each
+  for (i in seq_along(teams)) {
+    wins <- sum((match5$home_team_location == teams[i] & match5$home_win == 1) +
+                (match5$away_team_location == teams[i] & match5$home_win == 0))
+    # Dynamically assign the wins to team1_wins, team2_wins, etc.
+    assign(win_vars[i], wins)
+  }
+  # Function for finding max total games if each team played all other tied teams
+  total_games <- function(x) {
+    return(x * (x - 1) / 2)
+  }
+  
+  team_wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins)
+  # If all tied teams are common opponents
+  if (nrow(match5) == total_games(5)) {
+    # Find the maximum number of wins
+    max_wins <- max(team_wins)
+    # Find the indices of teams with the maximum wins
+    max_wins_indices <- which(team_wins == max_wins)
+    # Check if there is exactly one team with the maximum number of wins
+    if (length(max_wins_indices) == 1) {
+      # If only one team has the maximum wins, return that team
+      return(teams[max_wins_indices])
+    }
+  }
+
+  ### RULE 2a: If all the tied teams are not common opponents, the tied team that defeated each of the other tied teams.
+  # Names games variables for assigning after calculation
+  game_vars <- c("team1_games", "team2_games", "team3_games", "team4_games", "team5_games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games <- sum(match5$home_team_location == teams[i] | match5$away_team_location == teams[i])
+    # Dynamically assign the games to team1_games, team2_games, etc.
+    assign(game_vars[i], games)
+  }
+
+  team_games <- c(team1_games, team2_games, team3_games, team4_games, team5_games)
+  # If all the tied teams are not common opponents
+  if (nrow(match5) < total_games(5)) {
+    # Finds the team that defeated all of the other tied teams
+    if (any(team_wins == 4)) {
+      return(teams[which(team_wins == 4)])
+    }
+    ### RULE 2b: If all the tied teams are not common opponents, no tied team defeated each of the other tied teams,
+    ### but a tied team lost to each of the other tied teams, such team shall be eliminated and removed from the tie. 
+    # Finds the team lost to each of the other tied teams
+    if (any(team_wins == 0 & team_games == 4)) {
+      remove <- teams[which(team_wins == 0 & team_games == 4)]
+    }
+  }
+  # With the team that lost to both other tied teams in the remove variable it can be 
+  # removed from the tiebreaker and the other two teams can restart with the two team tiebreaker
+  if (exists("remove") && is.character(remove) && length(remove) > 0) {
+    teams_removed <- teams[!teams %in% remove]
+    return(tiebreaker_4_teams(teams_removed[1], teams_removed[2], teams_removed[3], teams_removed[4], games1, standings))
+  }
+  ### RULE 3: Win-percentage versus all common opponents. 
+  # Names the 2nd games variables for assigning after calculation
+  game_vars2 <- c("team1games", "team2games", "team3games", "team4games", "team5games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games2 <- games1[games1$home_team_location == teams[i] | games1$away_team_location == teams[i], ]
+    # Dynamically assign the games to team1games, team2games, etc.
+    assign(game_vars2[i], games2)
+  }
+  # Names the opponent variables for assigning after calculation
+  opponent_vars <- c("team1opps", "team2opps", "team3opps", "team4opps", "team5opps")
+  # Loop through the teams and find the opponents for each team
+  for (i in seq_along(teams)) {
+    # Get the games for the current team
+    current_games <- get(game_vars2[i])
+    # Find opponents
+    opponents <- c(
+      current_games$away_team_location[current_games$home_team_location == teams[i]], 
+      current_games$home_team_location[current_games$away_team_location == teams[i]]
+    )
+    # Dynamically assign the opponents to team1opps, team2opps, etc.
+    assign(opponent_vars[i], opponents)
+  }
+  # Finds the common opponents for each of the tied teams
+  common_opps <- Reduce(intersect, list(team1opps, team2opps, team3opps, team4opps, team5opps))
+  # Initialize empty lists to store filtered games and wins
+  filtered_games <- list()
+  wins <- numeric(length(teams))
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games2 <- list(team1games, team2games, team3games, team4games, team5games)
+  # Loop through the teams to filter games where they played a common opponent and calculate wins
+  for (i in seq_along(teams)) {
+    team_games_filtered <- team_games2[[i]][team_games2[[i]]$home_team_location %in% common_opps | 
+                                             team_games2[[i]]$away_team_location %in% common_opps, ]
+    # Store the filtered games
+    filtered_games[[i]] <- team_games_filtered
+    # Calculate wins
+    wins[i] <- sum((team_games_filtered$home_team_location == teams[i] & team_games_filtered$home_win == 1) +
+                  (team_games_filtered$away_team_location == teams[i] & team_games_filtered$home_win == 0))
+  }
+  # Assign filtered games with the "team(blank)games_filtered" format
+  for (i in seq_along(teams)) {
+    assign(paste0("team", i, "games_filtered"), filtered_games[[i]])
+  }
+  # Wins for each team in these common games are stored using the wins vector
+  team1_wins <- wins[1]
+  team2_wins <- wins[2]
+  team3_wins <- wins[3]
+  team4_wins <- wins[4]
+  team5_wins <- wins[5]
+  
+  wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins)
+   # Find the maximum number of wins
+  max_wins <- max(wins)
+  # Find the indices of teams with the maximum wins
+  max_indices <- which(wins == max_wins)
+  # Check if exactly one team has the maximum number of wins
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum wins, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 4: Combined win-percentage of conference opponents.
+  # Filters each teams' games to only their conference games
+  for (i in seq_along(teams)) {
+    filtered_games <- team_games2[[i]][team_games2[[i]]$conf_game == 1, ]
+    assign(paste0("team", i, "games_conf"), filtered_games)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games_conf <- list(team1games_conf, team2games_conf, team3games_conf, team4games_conf, team5games_conf)
+  # Loop through the teams and find conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    team_games <- team_games_conf[[i]]
+    # Extract opponents
+    opps_conf <- c(team_games$away_team_location[team_games$home_team_location == team], 
+                  team_games$home_team_location[team_games$away_team_location == team])
+    # Dynamically assign the opponents to a variable name
+    assign(paste0("team", i, "opps_conf"), opps_conf)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_opps_conf <- list(team1opps_conf, team2opps_conf, team3opps_conf, team4opps_conf, team5opps_conf)
+  # Loop through the teams and calculate the conference win percentage for each teams conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    opps_conf <- team_opps_conf[[i]]
+    # Calculate wins and losses
+    conf_wins_sum <- sum(standings$conf_wins[standings$team %in% opps_conf])
+    conf_losses_sum <- sum(standings$conf_losses[standings$team %in% opps_conf])
+    # Calculate win percentage
+    win_pct <- conf_wins_sum / (conf_wins_sum + conf_losses_sum)
+    # Dynamically assign the win percentage to a variable name
+    assign(paste0("team", i, "opps_confwinpct"), win_pct)
+  }
+  # Create a list of conference opponent conference win percentages
+  win_pct_list <- c(team1opps_confwinpct, team2opps_confwinpct, team3opps_confwinpct, team4opps_confwinpct, team5opps_confwinpct)
+  # Find the maximum win_pct
+  max_win_pct <- max(win_pct_list)
+  # Find the indices of teams with the maximum win_pct
+  max_indices <- which(win_pct_list == max_win_pct)
+  # Check if exactly one team has the maximum win_pct
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum win_pct, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 5: The tied team with the highest ranking by the Rating metric provided by Sagarin. 
+  # Get the team tied by conference opponent conference win percentage
+  tied_teams <- c(teams[max_indices])
+  # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+  tied_team_indices <- match(tied_teams, sagarin$team)
+  best_team_ratings <- sagarin$Rating[tied_team_indices]
+  # Find the team with the highest rating
+  best_team_index <- which.max(best_team_ratings)
+  # Return the team corresponding to the highest Sagarin rating
+  return(tied_teams[best_team_index])
+}
+
+#Six-Way Tiebreaker Function
+tiebreaker_6_teams <- function(team1, team2, team3, team4, team5, team6, games1, standings) {
+  teams <- c(team1, team2, team3, team4, team5, team6)
+  
+  ### RULE 1: Combined head-to-head win-percentage among the tied teams if all tied teams are common opponents. 
+  # Finds games where any of the tied teams matchup
+  match6 <- games1[games1$home_team_location %in% teams & games1$away_team_location %in% teams, ]
+  # Names wins variables for assigning after calculation
+  win_vars <- c("team1_wins", "team2_wins", "team3_wins", "team4_wins", "team5_wins", "team6_wins")
+  # Loop through the teams and calculate the wins for each
+  for (i in seq_along(teams)) {
+    wins <- sum((match6$home_team_location == teams[i] & match6$home_win == 1) +
+                (match6$away_team_location == teams[i] & match6$home_win == 0))
+    # Dynamically assign the wins to team1_wins, team2_wins, etc.
+    assign(win_vars[i], wins)
+  }
+  # Function for finding max total games if each team played all other tied teams
+  total_games <- function(x) {
+    return(x * (x - 1) / 2)
+  }
+  
+  team_wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins, team6_wins)
+  # If all tied teams are common opponents
+  if (nrow(match6) == total_games(6)) {
+    # Find the maximum number of wins
+    max_wins <- max(team_wins)
+    # Find the indices of teams with the maximum wins
+    max_wins_indices <- which(team_wins == max_wins)
+    # Check if there is exactly one team with the maximum number of wins
+    if (length(max_wins_indices) == 1) {
+      # If only one team has the maximum wins, return that team
+      return(teams[max_wins_indices])
+    }
+  }
+
+  ### RULE 2a: If all the tied teams are not common opponents, the tied team that defeated each of the other tied teams.
+  # Names games variables for assigning after calculation
+  game_vars <- c("team1_games", "team2_games", "team3_games", "team4_games", "team5_games", "team6_games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games <- sum(match6$home_team_location == teams[i] | match6$away_team_location == teams[i])
+    # Dynamically assign the games to team1_games, team2_games, etc.
+    assign(game_vars[i], games)
+  }
+
+  team_games <- c(team1_games, team2_games, team3_games, team4_games, team5_games, team6_games)
+  # If all the tied teams are not common opponents
+  if (nrow(match6) < total_games(6)) {
+    # Finds the team that defeated all of the other tied teams
+    if (any(team_wins == 5)) {
+      return(teams[which(team_wins == 5)])
+    }
+    ### RULE 2b: If all the tied teams are not common opponents, no tied team defeated each of the other tied teams,
+    ### but a tied team lost to each of the other tied teams, such team shall be eliminated and removed from the tie. 
+    # Finds the team lost to each of the other tied teams
+    if (any(team_wins == 0 & team_games == 5)) {
+      remove <- teams[which(team_wins == 0 & team_games == 5)]
+    }
+  }
+  # With the team that lost to both other tied teams in the remove variable it can be 
+  # removed from the tiebreaker and the other two teams can restart with the two team tiebreaker
+  if (exists("remove") && is.character(remove) && length(remove) > 0) {
+    teams_removed <- teams[!teams %in% remove]
+    return(tiebreaker_5_teams(teams_removed[1], teams_removed[2], teams_removed[3], teams_removed[4], teams_removed[5], games1, standings))
+  }
+  ### RULE 3: Win-percentage versus all common opponents. 
+  # Names the 2nd games variables for assigning after calculation
+  game_vars2 <- c("team1games", "team2games", "team3games", "team4games", "team5games", "team6games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games2 <- games1[games1$home_team_location == teams[i] | games1$away_team_location == teams[i], ]
+    # Dynamically assign the games to team1games, team2games, etc.
+    assign(game_vars2[i], games2)
+  }
+  # Names the opponent variables for assigning after calculation
+  opponent_vars <- c("team1opps", "team2opps", "team3opps", "team4opps", "team5opps", "team6opps")
+  # Loop through the teams and find the opponents for each team
+  for (i in seq_along(teams)) {
+    # Get the games for the current team
+    current_games <- get(game_vars2[i])
+    # Find opponents
+    opponents <- c(
+      current_games$away_team_location[current_games$home_team_location == teams[i]], 
+      current_games$home_team_location[current_games$away_team_location == teams[i]]
+    )
+    # Dynamically assign the opponents to team1opps, team2opps, etc.
+    assign(opponent_vars[i], opponents)
+  }
+  # Finds the common opponents for each of the tied teams
+  common_opps <- Reduce(intersect, list(team1opps, team2opps, team3opps, team4opps, team5opps, team6opps))
+  # Initialize empty lists to store filtered games and wins
+  filtered_games <- list()
+  wins <- numeric(length(teams))
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games2 <- list(team1games, team2games, team3games, team4games, team5games, team6games)
+  # Loop through the teams to filter games where they played a common opponent and calculate wins
+  for (i in seq_along(teams)) {
+    team_games_filtered <- team_games2[[i]][team_games2[[i]]$home_team_location %in% common_opps | 
+                                             team_games2[[i]]$away_team_location %in% common_opps, ]
+    # Store the filtered games
+    filtered_games[[i]] <- team_games_filtered
+    # Calculate wins
+    wins[i] <- sum((team_games_filtered$home_team_location == teams[i] & team_games_filtered$home_win == 1) +
+                  (team_games_filtered$away_team_location == teams[i] & team_games_filtered$home_win == 0))
+  }
+  # Assign filtered games with the "team(blank)games_filtered" format
+  for (i in seq_along(teams)) {
+    assign(paste0("team", i, "games_filtered"), filtered_games[[i]])
+  }
+  # Wins for each team in these common games are stored using the wins vector
+  team1_wins <- wins[1]
+  team2_wins <- wins[2]
+  team3_wins <- wins[3]
+  team4_wins <- wins[4]
+  team5_wins <- wins[5]
+  team6_wins <- wins[6]
+  
+  wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins, team6_wins)
+   # Find the maximum number of wins
+  max_wins <- max(wins)
+  # Find the indices of teams with the maximum wins
+  max_indices <- which(wins == max_wins)
+  # Check if exactly one team has the maximum number of wins
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum wins, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 4: Combined win-percentage of conference opponents.
+  # Filters each teams' games to only their conference games
+  for (i in seq_along(teams)) {
+    filtered_games <- team_games2[[i]][team_games2[[i]]$conf_game == 1, ]
+    assign(paste0("team", i, "games_conf"), filtered_games)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games_conf <- list(team1games_conf, team2games_conf, team3games_conf, team4games_conf, team5games_conf, team6games_conf)
+  # Loop through the teams and find conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    team_games <- team_games_conf[[i]]
+    # Extract opponents
+    opps_conf <- c(team_games$away_team_location[team_games$home_team_location == team], 
+                  team_games$home_team_location[team_games$away_team_location == team])
+    # Dynamically assign the opponents to a variable name
+    assign(paste0("team", i, "opps_conf"), opps_conf)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_opps_conf <- list(team1opps_conf, team2opps_conf, team3opps_conf, team4opps_conf, team5opps_conf, team6opps_conf)
+  # Loop through the teams and calculate the conference win percentage for each teams conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    opps_conf <- team_opps_conf[[i]]
+    # Calculate wins and losses
+    conf_wins_sum <- sum(standings$conf_wins[standings$team %in% opps_conf])
+    conf_losses_sum <- sum(standings$conf_losses[standings$team %in% opps_conf])
+    # Calculate win percentage
+    win_pct <- conf_wins_sum / (conf_wins_sum + conf_losses_sum)
+    # Dynamically assign the win percentage to a variable name
+    assign(paste0("team", i, "opps_confwinpct"), win_pct)
+  }
+  # Create a list of conference opponent conference win percentages
+  win_pct_list <- c(team1opps_confwinpct, team2opps_confwinpct, team3opps_confwinpct, team4opps_confwinpct, team5opps_confwinpct, team6opps_confwinpct)
+  # Find the maximum win_pct
+  max_win_pct <- max(win_pct_list)
+  # Find the indices of teams with the maximum win_pct
+  max_indices <- which(win_pct_list == max_win_pct)
+  # Check if exactly one team has the maximum win_pct
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum win_pct, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 5: The tied team with the highest ranking by the Rating metric provided by Sagarin. 
+  # Get the team tied by conference opponent conference win percentage
+  tied_teams <- c(teams[max_indices])
+  # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+  tied_team_indices <- match(tied_teams, sagarin$team)
+  best_team_ratings <- sagarin$Rating[tied_team_indices]
+  # Find the team with the highest rating
+  best_team_index <- which.max(best_team_ratings)
+  # Return the team corresponding to the highest Sagarin rating
+  return(tied_teams[best_team_index])
+}
+
+#Seven-Way Tiebreaker Function
+tiebreaker_7_teams <- function(team1, team2, team3, team4, team5, team6, team7, games1, standings) {
+  teams <- c(team1, team2, team3, team4, team5, team6, team7)
+  
+  ### RULE 1: Combined head-to-head win-percentage among the tied teams if all tied teams are common opponents. 
+  # Finds games where any of the tied teams matchup
+  match7 <- games1[games1$home_team_location %in% teams & games1$away_team_location %in% teams, ]
+  # Names wins variables for assigning after calculation
+  win_vars <- c("team1_wins", "team2_wins", "team3_wins", "team4_wins", "team5_wins", "team6_wins", "team7_wins")
+  # Loop through the teams and calculate the wins for each
+  for (i in seq_along(teams)) {
+    wins <- sum((match7$home_team_location == teams[i] & match7$home_win == 1) +
+                (match7$away_team_location == teams[i] & match7$home_win == 0))
+    # Dynamically assign the wins to team1_wins, team2_wins, etc.
+    assign(win_vars[i], wins)
+  }
+  # Function for finding max total games if each team played all other tied teams
+  total_games <- function(x) {
+    return(x * (x - 1) / 2)
+  }
+  
+  team_wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins, team6_wins, team7_wins)
+  # If all tied teams are common opponents
+  if (nrow(match7) == total_games(7)) {
+    # Find the maximum number of wins
+    max_wins <- max(team_wins)
+    # Find the indices of teams with the maximum wins
+    max_wins_indices <- which(team_wins == max_wins)
+    # Check if there is exactly one team with the maximum number of wins
+    if (length(max_wins_indices) == 1) {
+      # If only one team has the maximum wins, return that team
+      return(teams[max_wins_indices])
+    }
+  }
+
+  ### RULE 2a: If all the tied teams are not common opponents, the tied team that defeated each of the other tied teams.
+  # Names games variables for assigning after calculation
+  game_vars <- c("team1_games", "team2_games", "team3_games", "team4_games", "team5_games", "team6_games", "team7_games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games <- sum(match7$home_team_location == teams[i] | match7$away_team_location == teams[i])
+    # Dynamically assign the games to team1_games, team2_games, etc.
+    assign(game_vars[i], games)
+  }
+
+  team_games <- c(team1_games, team2_games, team3_games, team4_games, team5_games, team6_games, team7_games)
+  # If all the tied teams are not common opponents
+  if (nrow(match7) < total_games(7)) {
+    # Finds the team that defeated all of the other tied teams
+    if (any(team_wins == 6)) {
+      return(teams[which(team_wins == 6)])
+    }
+    ### RULE 2b: If all the tied teams are not common opponents, no tied team defeated each of the other tied teams,
+    ### but a tied team lost to each of the other tied teams, such team shall be eliminated and removed from the tie. 
+    # Finds the team lost to each of the other tied teams
+    if (any(team_wins == 0 & team_games == 6)) {
+      remove <- teams[which(team_wins == 0 & team_games == 6)]
+    }
+  }
+  # With the team that lost to both other tied teams in the remove variable it can be 
+  # removed from the tiebreaker and the other two teams can restart with the two team tiebreaker
+  if (exists("remove") && is.character(remove) && length(remove) > 0) {
+    teams_removed <- teams[!teams %in% remove]
+    return(tiebreaker_6_teams(teams_removed[1], teams_removed[2], teams_removed[3], teams_removed[4], teams_removed[5], teams_removed[6], games1, standings))
+  }
+  ### RULE 3: Win-percentage versus all common opponents. 
+  # Names the 2nd games variables for assigning after calculation
+  game_vars2 <- c("team1games", "team2games", "team3games", "team4games", "team5games", "team6games", "team7games")
+  # Loop through the teams and calculate the games for each
+  for (i in seq_along(teams)) {
+    games2 <- games1[games1$home_team_location == teams[i] | games1$away_team_location == teams[i], ]
+    # Dynamically assign the games to team1games, team2games, etc.
+    assign(game_vars2[i], games2)
+  }
+  # Names the opponent variables for assigning after calculation
+  opponent_vars <- c("team1opps", "team2opps", "team3opps", "team4opps", "team5opps", "team6opps", "team7opps")
+  # Loop through the teams and find the opponents for each team
+  for (i in seq_along(teams)) {
+    # Get the games for the current team
+    current_games <- get(game_vars2[i])
+    # Find opponents
+    opponents <- c(
+      current_games$away_team_location[current_games$home_team_location == teams[i]], 
+      current_games$home_team_location[current_games$away_team_location == teams[i]]
+    )
+    # Dynamically assign the opponents to team1opps, team2opps, etc.
+    assign(opponent_vars[i], opponents)
+  }
+  # Finds the common opponents for each of the tied teams
+  common_opps <- Reduce(intersect, list(team1opps, team2opps, team3opps, team4opps, team5opps, team6opps, team7opps))
+  # Initialize empty lists to store filtered games and wins
+  filtered_games <- list()
+  wins <- numeric(length(teams))
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games2 <- list(team1games, team2games, team3games, team4games, team5games, team6games, team7games)
+  # Loop through the teams to filter games where they played a common opponent and calculate wins
+  for (i in seq_along(teams)) {
+    team_games_filtered <- team_games2[[i]][team_games2[[i]]$home_team_location %in% common_opps | 
+                                             team_games2[[i]]$away_team_location %in% common_opps, ]
+    # Store the filtered games
+    filtered_games[[i]] <- team_games_filtered
+    # Calculate wins
+    wins[i] <- sum((team_games_filtered$home_team_location == teams[i] & team_games_filtered$home_win == 1) +
+                  (team_games_filtered$away_team_location == teams[i] & team_games_filtered$home_win == 0))
+  }
+  # Assign filtered games with the "team(blank)games_filtered" format
+  for (i in seq_along(teams)) {
+    assign(paste0("team", i, "games_filtered"), filtered_games[[i]])
+  }
+  # Wins for each team in these common games are stored using the wins vector
+  team1_wins <- wins[1]
+  team2_wins <- wins[2]
+  team3_wins <- wins[3]
+  team4_wins <- wins[4]
+  team5_wins <- wins[5]
+  team6_wins <- wins[6]
+  team7_wins <- wins[7]
+  
+  wins <- c(team1_wins, team2_wins, team3_wins, team4_wins, team5_wins, team6_wins, team7_wins)
+   # Find the maximum number of wins
+  max_wins <- max(wins)
+  # Find the indices of teams with the maximum wins
+  max_indices <- which(wins == max_wins)
+  # Check if exactly one team has the maximum number of wins
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum wins, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 4: Combined win-percentage of conference opponents.
+  # Filters each teams' games to only their conference games
+  for (i in seq_along(teams)) {
+    filtered_games <- team_games2[[i]][team_games2[[i]]$conf_game == 1, ]
+    assign(paste0("team", i, "games_conf"), filtered_games)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_games_conf <- list(team1games_conf, team2games_conf, team3games_conf, team4games_conf, team5games_conf, team6games_conf, team7games_conf)
+  # Loop through the teams and find conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    team_games <- team_games_conf[[i]]
+    # Extract opponents
+    opps_conf <- c(team_games$away_team_location[team_games$home_team_location == team], 
+                  team_games$home_team_location[team_games$away_team_location == team])
+    # Dynamically assign the opponents to a variable name
+    assign(paste0("team", i, "opps_conf"), opps_conf)
+  }
+  #Creates a list for the use of the [[i]] functionality in the for loop
+  team_opps_conf <- list(team1opps_conf, team2opps_conf, team3opps_conf, team4opps_conf, team5opps_conf, team6opps_conf, team7opps_conf)
+  # Loop through the teams and calculate the conference win percentage for each teams conference opponents
+  for (i in seq_along(teams)) {
+    team <- teams[i]
+    opps_conf <- team_opps_conf[[i]]
+    # Calculate wins and losses
+    conf_wins_sum <- sum(standings$conf_wins[standings$team %in% opps_conf])
+    conf_losses_sum <- sum(standings$conf_losses[standings$team %in% opps_conf])
+    # Calculate win percentage
+    win_pct <- conf_wins_sum / (conf_wins_sum + conf_losses_sum)
+    # Dynamically assign the win percentage to a variable name
+    assign(paste0("team", i, "opps_confwinpct"), win_pct)
+  }
+  # Create a list of conference opponent conference win percentages
+  win_pct_list <- c(team1opps_confwinpct, team2opps_confwinpct, team3opps_confwinpct, team4opps_confwinpct, team5opps_confwinpct, team6opps_confwinpct, team7opps_confwinpct)
+  # Find the maximum win_pct
+  max_win_pct <- max(win_pct_list)
+  # Find the indices of teams with the maximum win_pct
+  max_indices <- which(win_pct_list == max_win_pct)
+  # Check if exactly one team has the maximum win_pct
+  if (length(max_indices) == 1) {
+    # If only one team has the maximum win_pct, return that team
+    return(teams[max_indices])
+  }
+  
+  ### RULE 5: The tied team with the highest ranking by the Rating metric provided by Sagarin. 
+  # Get the team tied by conference opponent conference win percentage
+  tied_teams <- c(teams[max_indices])
+  # Use match to maintain the order of tied_teams and get the Sagarin ratings for the best teams
+  tied_team_indices <- match(tied_teams, sagarin$team)
+  best_team_ratings <- sagarin$Rating[tied_team_indices]
+  # Find the team with the highest rating
+  best_team_index <- which.max(best_team_ratings)
+  # Return the team corresponding to the highest Sagarin rating
+  return(tied_teams[best_team_index])
+}
+```
+
+```{r}
+# Make a function to sim a game with a specified home and away team for conference championships and playoff games
+simulate_game <- function(home_team, away_team, neutral) {
+  # Find the ratings for home and away teams
+  home_team_rating <- sagarin$Rating[sagarin$team == home_team]
+  away_team_rating <- sagarin$Rating[sagarin$team == away_team]
+  
+  # If the game is not on a neutral site, add 2.45 to the home team's rating
+  if (neutral == 0) {
+    home_team_rating <- home_team_rating + 2.45
+  }
+  
+  # Calculate the spread
+  spread <- away_team_rating - home_team_rating
+  
+  # Find home team's win probability
+  home_win_prob <- find_win_prob(spread, bins_df)
+  
+  # Simulate the game outcome
+  if (runif(1) <= home_win_prob) {
+    return(home_team)
+  } else {
+    return(away_team)
+  }
+}
+
+results <- replicate(100, simulate_game("Alabama", "Notre Dame", 0))
+
+# Count the occurrences of each team as the winner
+table(results)
+```
+
+```{r}
+update_standings <- function(home_team, away_team, winner, neutral, standings) {
+  
+  # Find the Sagarin rating values for the home and away teams
+  home_rating <- sagarin$Rating[sagarin$team == home_team]
+  away_rating <- sagarin$Rating[sagarin$team == away_team]
+
+  # Update resume_score2 based on the winner and neutral flag
+  if (winner == home_team) {
+    # Update home team's resume_score2
+    standings$resume_score2[standings$team == home_team] <- standings$resume_score2[standings$team == home_team] + away_rating
+    
+    # Update away team's resume_score2 based on whether the game was neutral or not
+    if (neutral == 0) {
+      standings$resume_score2[standings$team == away_team] <- standings$resume_score2[standings$team == away_team] - (110 - home_rating + 2.45)
+    } else if (neutral == 1){
+      standings$resume_score2[standings$team == away_team] <- standings$resume_score2[standings$team == away_team] - (110 - home_rating)
+    }
+    
+  } else if (winner == away_team) {
+    # Update home team's resume_score2
+    standings$resume_score2[standings$team == home_team] <- standings$resume_score2[standings$team == home_team] - (110 - away_rating)
+    
+    # Update away team's resume_score2 based on whether the game was neutral or not
+    if (neutral == 0) {
+      standings$resume_score2[standings$team == away_team] <- standings$resume_score2[standings$team == away_team] + home_rating + 2.45
+    } else if (neutral == 1) {
+      standings$resume_score2[standings$team == away_team] <- standings$resume_score2[standings$team == away_team] + home_rating
+    }
+  }
+  standings <- standings[order(standings$conference, -standings$conf_wins, -standings$resume_score2), ]
+  return(standings)
+}
+```
+
+```{r}
+simulate_season <- function(games) {
+  games1 <- games %>%
+    mutate(
+      home_win = ifelse(is.na(home_win), 
+                        ifelse(runif(n()) <= home_win_prob, 1, 0), home_win),
+      away_win = ifelse(is.na(away_win), 
+                        ifelse(home_win == 1, 0, 1), away_win),
+      home_conf_win = ifelse(conf_game == 1 & home_win == 1, 1, 0),
+      away_conf_win = ifelse(conf_game == 1 & away_win == 1, 1, 0)
+    )
+  
+  # Calculate home and away total wins and conference wins
+  home_wins <- games1 %>%
+    group_by(home_team_location, home_conf) %>%
+    summarise(
+      total_wins = sum(home_win, na.rm = TRUE),
+      conf_wins = sum(home_conf_win, na.rm = TRUE),
+      .groups = 'drop'
+    )
+  
+  away_wins <- games1 %>%
+    group_by(away_team_location, away_conf) %>%
+    summarise(
+      total_wins = sum(away_win, na.rm = TRUE),
+      conf_wins = sum(away_conf_win, na.rm = TRUE),
+      .groups = 'drop'
+    )
+  
+  # Combine home and away wins and losses, including conference wins
+  standings <- full_join(home_wins, away_wins, 
+                         by = c("home_team_location" = "away_team_location",
+                                "home_conf" = "away_conf")) %>%
+    mutate(
+      total_wins = total_wins.x + total_wins.y,
+      conf_wins = conf_wins.x + conf_wins.y,
+      
+      # Use case_when to handle multiple conditions for conference losses
+      conf_losses = case_when(
+        home_team_location %in% c("Arizona", "Arizona State", "Baylor", "BYU", 
+                                  "Cincinnati", "Colorado", "Houston", "Iowa State", 
+                                  "Kansas", "Kansas State", "Oklahoma State", "TCU", 
+                                  "Texas Tech", "UCF", "Utah", "West Virginia", 
+                                  "Illinois", "Indiana", "Iowa", "Maryland", 
+                                  "Michigan", "Michigan State", "Minnesota", 
+                                  "Nebraska", "Northwestern", "Ohio State", 
+                                  "Oregon", "Penn State", "Purdue", "Rutgers", 
+                                  "UCLA", "USC", "Washington", "Wisconsin") ~ 9 - conf_wins,
+        
+        home_team_location %in% c("Air Force", "Boise State", "Colorado State", 
+                                  "Fresno State", "Hawai'i", "Nevada", "New Mexico", 
+                                  "San Diego State", "San José State", "UNLV", 
+                                  "Utah State", "Wyoming") ~ 7 - conf_wins,
+        home_team_location %in% c("Oregon State", "Washington State") ~ 1 - conf_wins,
+        home_team_location %in% c("Notre Dame", "Massachusetts","UConn") ~ 0,
+        
+        TRUE ~ 8 - conf_wins  # Default case for other teams
+      ),
+      
+      total_losses = case_when(
+        home_team_location == "Nevada" ~ 13 - total_wins,
+        TRUE ~ 12 - total_wins
+      )
+    ) %>%
+    select(
+      team = home_team_location, 
+      conference = home_conf,
+      total_wins, 
+      total_losses, 
+      conf_wins, 
+      conf_losses
+    ) %>% mutate(conference = case_when(
+          team %in% c("Arkansas State", "Louisiana", "UL Monroe", "South Alabama",
+                      "Southern Miss", "Texas State", "Troy") ~ "Sun Belt - West", 
+          team %in% c("App State", "Coastal Carolina", "Georgia Southern", "Georgia State",
+                      "James Madison", "Marshall", "Old Dominion") ~ "Sun Belt - East",
+                      TRUE ~ conference)) %>%
+    filter(!is.na(total_wins))
+  
+  team <- c("Texas", "Georgia", "Alabama", "Ohio State", "Ole Miss", "Oregon", "Notre Dame", "Tennessee", 
+          "Penn State", "Miami", "Utah", "Kansas State", "Missouri", "USC", "Oklahoma", "LSU", 
+          "Oklahoma State", "Texas A&M", "Michigan", "Clemson", "Louisville", "Iowa", "UCF", 
+          "Iowa State", "Auburn", "Nebraska", "Florida State", "Boise State", "TCU", "Kentucky", 
+          "South Carolina", "Kansas", "Memphis", "Baylor", "Washington State", "Maryland", 
+          "Washington", "Virginia Tech", "West Virginia", "SMU", "California", "Florida", 
+          "Wisconsin", "Texas Tech", "UNLV", "Arizona", "BYU", "Indiana", "Rutgers", "Minnesota", 
+          "Illinois", "Arkansas", "Georgia Tech", "Arizona State", "Boston College", "Colorado", 
+          "North Carolina", "Syracuse", "Tulane", "Oregon State", "Pittsburgh", "Cincinnati", 
+          "NC State", "South Florida", "Houston", "Fresno State", "Texas State", "Michigan State", 
+          "App State", "Mississippi State", "Toledo", "Liberty", "Duke", "UCLA", "James Madison", 
+          "Northwestern", "Virginia", "Louisiana", "Purdue", "Coastal Carolina", "Stanford", 
+          "Wake Forest", "Western Kentucky", "Northern Illinois", "Vanderbilt", "East Carolina", 
+          "Arkansas State", "Army", "Marshall", "UTSA", "Miami (OH)", "Georgia Southern", 
+          "Bowling Green", "San José State", "South Alabama", "Troy", "Navy", "Florida Atlantic", 
+          "Utah State", "Air Force", "Rice", "Old Dominion", "UAB", "Wyoming", "Colorado State", 
+          "San Diego State", "Sam Houston", "Ohio", "North Texas", "Georgia State", "UConn", 
+          "Jacksonville State", "Western Michigan", "Hawai'i", "Tulsa", "Central Michigan", "Nevada", 
+          "Buffalo", "Florida International", "Southern Miss", "New Mexico", "Eastern Michigan", 
+          "UL Monroe", "Louisiana Tech", "Charlotte", "Ball State", "New Mexico State", "UTEP", 
+          "Middle Tennessee", "Akron", "Temple", "Kennesaw State", "Kent State", "Massachusetts")
+
+  Rating <- c(95.09, 93.59, 92.82, 92.37, 89.95, 88.90, 88.27, 87.96, 85.60, 85.02, 84.84, 84.84, 84.75, 
+            84.67, 84.31, 83.96, 83.82, 83.51, 82.88, 82.52, 82.03, 80.82, 80.63, 80.39, 79.70, 79.47, 
+            78.78, 78.36, 78.19, 77.64, 77.64, 77.50, 77.21, 77.08, 77.05, 76.44, 76.25, 75.97, 75.93, 
+            75.86, 75.77, 75.69, 75.63, 75.47, 75.34, 75.19, 75.12, 75.11, 75.07, 75.03, 75.00, 74.86, 
+            74.40, 74.06, 74.05, 73.85, 73.81, 73.37, 73.30, 72.63, 72.52, 72.49, 71.80, 71.59, 71.38, 
+            71.04, 70.22, 69.70, 69.61, 69.57, 69.25, 69.21, 69.09, 68.82, 68.73, 68.02, 67.92, 67.58, 
+            67.17, 66.77, 66.62, 66.40, 65.86, 65.77, 65.47, 65.38, 65.24, 64.99, 64.98, 64.94, 64.90, 
+            64.49, 63.91, 63.74, 63.62, 63.41, 62.91, 62.64, 62.52, 62.10, 62.08, 61.94, 61.79, 61.37, 
+            61.20, 61.08, 60.96, 60.81, 60.70, 59.85, 58.39, 58.36, 58.13, 57.83, 57.22, 57.12, 57.01, 
+            56.73, 56.31, 56.31, 56.22, 56.20, 55.74, 55.18, 54.85, 54.14, 52.85, 52.51, 51.27, 50.55, 
+            50.47, 46.82, 44.29, 44.20)
+
+  sagarinwk3 <- data.frame(team, Rating)
+  #standings <- standings[ , -c(1,8:11)]
+  # Initialize vectors to store the additional stats
+  resume_scores <- setNames(rep(0, length(teams)), teams)
+  top25wins <- setNames(rep(0, length(teams)), teams)
+  top25losses <- setNames(rep(0, length(teams)), teams)
+
+  # Loop through each game and calculate resume score updates
+  for (i in 1:nrow(games1)) {
+    # Extract necessary info for the game
+    home_team <- games1$home_team_location[i]
+    away_team <- games1$away_team_location[i]
+    home_win <- games1$home_win[i]
+    away_win <- games1$away_win[i]
+    home_rating <- games1$home_rating[i]
+    away_rating <- games1$away_rating[i]
+  
+    # If the home team won
+    if (home_win == 1) {
+      resume_scores[home_team] <- resume_scores[home_team] + away_rating
+      resume_scores[away_team] <- resume_scores[away_team] - (110 - home_rating)
+    
+      # Track wins/losses against top 25 teams (rating > 79.5)
+      if (away_rating > sagarin[25, 2]) {
+        top25wins[home_team] <- top25wins[home_team] + 1
+      }
+      if (home_rating > sagarin[25, 2]) {
+        top25losses[away_team] <- top25losses[away_team] + 1
+      }
+    }
+  
+    # If the away team won
+    if (away_win == 1) {
+      resume_scores[away_team] <- resume_scores[away_team] + home_rating
+      resume_scores[home_team] <- resume_scores[home_team] - (110 - away_rating)
+    
+      # Track wins/losses against top 25 teams (rating > 79.5)
+      if (home_rating > sagarin[25, 2]) {
+        top25wins[away_team] <- top25wins[away_team] + 1
+      }
+      if (away_rating > sagarin[25, 2]) {
+        top25losses[home_team] <- top25losses[home_team] + 1
+      }  
+    }
+  }
+
+  # Create resume_scores_df with team, resume_score, top25wins, and top25losses
+  resume_scores_df <- data.frame(
+    team = names(resume_scores),
+    resume_score = resume_scores,
+    top25wins = top25wins,
+    top25losses = top25losses,
+    stringsAsFactors = FALSE
+  )
+
+  # Calculate resume_score2 based on the formula provided
+  resume_scores_df$resume_score <- resume_scores_df$resume_score + (resume_scores_df$top25wins * 5) + (resume_scores_df$top25losses * 5)
+
+  # Merge the resume scores with the standings dataframe
+  standings <- merge(standings, resume_scores_df, by.x = "team", by.y = "team", all.x = TRUE)
+
+  # Create a function to adjust the resume_score2 based on conference
+  adjust_resume_score <- function(conference, team, resume_score) {
+    if (conference == "SEC") {
+      return(resume_score + 80)
+    } else if (conference %in% c("Big 12", "Big Ten")) {
+      return(resume_score + 70)
+    } else if (conference == "ACC") {
+      return(resume_score + 60)
+    } else if (conference == "Pac-12") {
+      return(resume_score + 50)
+    } else if (conference %in% c("American", "Mountain West")) {
+      return(resume_score + 30)
+    } else if (conference %in% c("Sun Belt - West", "Sun Belt - East")) {
+      return(resume_score + 20)
+    } else if (conference == "MAC") {
+      return(resume_score + 10)
+    } else if (team == "Notre Dame") {
+      return(resume_score + 65)
+    } else {
+      return(resume_score)  # No change for other conferences
+    }
+  }
+
+  # Apply the function to each row in the dataframe
+  standings$resume_score2 <- mapply(adjust_resume_score, standings$conference, standings$team, standings$resume_score)
+  standings <- standings %>%
+    arrange(desc(resume_score2)) %>%
+    rename(team = team)
+
+  standings <- merge(standings, sagarinwk3[, c("team", "Rating")], by = "team", all.x = TRUE)
+  standings$resume_score2 <- standings$resume_score2 + standings$Rating
+  standings <- standings[, !colnames(standings) %in% c("Rating")]
+
+  standings <- standings %>%
+    arrange(desc(resume_score2)) %>%
+    select(-resume_score) %>%
+    select(1, 2, 3, 4, 5, 6, 9, 7, 8)
+  
+  #ACC
+  acc_teams <- standings %>%
+    filter(conference == "ACC") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- acc_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    acc_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      acc_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      acc_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      acc_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      acc_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      acc_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      acc_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      acc_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  acc_teams2 <- acc_teams %>%
+    filter(team != acc_champ_team1)
+  
+  tied_teams2 <- acc_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    acc_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      acc_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      acc_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      acc_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      acc_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      acc_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      acc_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      acc_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  acc_champ_winner <- simulate_game(acc_champ_team1, acc_champ_team2, 1)
+  standings <- update_standings(acc_champ_team1, acc_champ_team2, acc_champ_winner, 1, standings)
+  
+  #American
+  american_teams <- standings %>%
+    filter(conference == "American") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- american_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    american_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      american_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      american_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      american_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      american_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      american_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      american_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      american_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  american_teams2 <- american_teams %>%
+    filter(team != american_champ_team1)
+  
+  tied_teams2 <- american_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    american_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      american_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      american_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      american_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      american_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      american_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      american_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      american_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  american_champ_winner <- simulate_game(american_champ_team1, american_champ_team2, 0)
+  standings <- update_standings(american_champ_team1, american_champ_team2, american_champ_winner, 0, standings)
+  
+  #Big 12
+  big12_teams <- standings %>%
+    filter(conference == "Big 12") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- big12_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    big12_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      big12_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      big12_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      big12_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      big12_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      big12_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      big12_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      big12_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  big12_teams2 <- big12_teams %>%
+    filter(team != big12_champ_team1)
+  
+  tied_teams2 <- big12_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    big12_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      big12_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      big12_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      big12_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      big12_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      big12_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      big12_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      big12_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  big12_champ_winner <- simulate_game(big12_champ_team1, big12_champ_team2, 1)
+  standings <- update_standings(big12_champ_team1, big12_champ_team2, big12_champ_winner, 1, standings)
+  
+  #Big Ten
+  bigten_teams <- standings %>%
+    filter(conference == "Big Ten") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- bigten_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    bigten_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      bigten_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      bigten_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      bigten_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      bigten_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      bigten_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      bigten_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      bigten_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  bigten_teams2 <- bigten_teams %>%
+    filter(team != bigten_champ_team1)
+  
+  tied_teams2 <- bigten_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    bigten_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      bigten_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      bigten_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      bigten_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      bigten_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      bigten_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      bigten_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      bigten_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  bigten_champ_winner <- simulate_game(bigten_champ_team1, bigten_champ_team2, 1)
+  standings <- update_standings(bigten_champ_team1, bigten_champ_team2, bigten_champ_winner, 1, standings)
+
+  #Conference USA
+  cusa_teams <- standings %>%
+    filter(conference == "CUSA") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- cusa_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    cusa_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      cusa_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      cusa_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      cusa_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      cusa_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      cusa_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      cusa_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      cusa_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  cusa_teams2 <- cusa_teams %>%
+    filter(team != cusa_champ_team1)
+  
+  tied_teams2 <- cusa_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    cusa_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      cusa_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      cusa_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      cusa_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      cusa_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      cusa_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      cusa_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      cusa_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  cusa_champ_winner <- simulate_game(cusa_champ_team1, cusa_champ_team2, 0)
+  standings <- update_standings(cusa_champ_team1, cusa_champ_team2, cusa_champ_winner, 0, standings)
+
+  #MAC
+  mac_teams <- standings %>%
+    filter(conference == "MAC") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- mac_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    mac_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      mac_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      mac_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      mac_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      mac_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      mac_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      mac_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      mac_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  mac_teams2 <- mac_teams %>%
+    filter(team != mac_champ_team1)
+  
+  tied_teams2 <- mac_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    mac_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      mac_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      mac_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      mac_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      mac_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      mac_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      mac_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      mac_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  mac_champ_winner <- simulate_game(mac_champ_team1, mac_champ_team2, 1)
+  standings <- update_standings(mac_champ_team1, mac_champ_team2, mac_champ_winner, 1, standings)
+  
+  #Mountain West
+  mountainwest_teams <- standings %>%
+    filter(conference == "Mountain West") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- mountainwest_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    mountainwest_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      mountainwest_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      mountainwest_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      mountainwest_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      mountainwest_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      mountainwest_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      mountainwest_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      mountainwest_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  mountainwest_teams2 <- mountainwest_teams %>%
+    filter(team != mountainwest_champ_team1)
+  
+  tied_teams2 <- mountainwest_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    mountainwest_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      mountainwest_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      mountainwest_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      mountainwest_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      mountainwest_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      mountainwest_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      mountainwest_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      mountainwest_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  mountainwest_champ_winner <- simulate_game(mountainwest_champ_team1, mountainwest_champ_team2, 0)
+  standings <- update_standings(mountainwest_champ_team1, mountainwest_champ_team2, mountainwest_champ_winner, 0, standings)
+
+  #SEC
+  sec_teams <- standings %>%
+    filter(conference == "SEC") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- sec_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    sec_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      sec_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      sec_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      sec_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      sec_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      sec_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      sec_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      sec_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  sec_teams2 <- sec_teams %>%
+    filter(team != sec_champ_team1)
+  
+  tied_teams2 <- sec_teams2 %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams2) == 1) {
+    sec_champ_team2 <- tied_teams2$team[1]
+    } else if (nrow(tied_teams2) == 2) {
+      sec_champ_team2 <- tiebreaker_2_teams(tied_teams2$team[1], tied_teams2$team[2], games1, standings)
+    } else if (nrow(tied_teams2) == 3) {
+      sec_champ_team2 <- tiebreaker_3_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3], games1, standings)
+    } else if (nrow(tied_teams2) == 4) {
+      sec_champ_team2 <- tiebreaker_4_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], games1, standings)
+    } else if (nrow(tied_teams2) == 5) {
+      sec_champ_team2 <- tiebreaker_5_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                               tied_teams2$team[4], tied_teams2$team[5], games1, standings)
+    } else if (nrow(tied_teams2) == 6) {
+      sec_champ_team2 <- tiebreaker_6_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                              tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], games1, standings)
+    } else if (nrow(tied_teams2) == 7) {
+      sec_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    } else if (nrow(tied_teams2) > 7) {
+      sec_champ_team2 <- tiebreaker_7_teams(tied_teams2$team[1], tied_teams2$team[2], tied_teams2$team[3],
+                                                tied_teams2$team[4], tied_teams2$team[5], tied_teams2$team[6], tied_teams2$team[7], games1, standings)
+    }
+  
+  sec_champ_winner <- simulate_game(sec_champ_team1, sec_champ_team2, 1)
+  standings <- update_standings(sec_champ_team1, sec_champ_team2, sec_champ_winner, 1, standings)
+
+  #Sun Belt - West
+  sunbeltw_teams <- standings %>%
+    filter(conference == "Sun Belt - West") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- sunbeltw_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    sunbeltw_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      sunbeltw_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      sunbeltw_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      sunbeltw_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      sunbeltw_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      sunbeltw_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      sunbeltw_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      sunbeltw_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+  
+  #Sun Belt - East
+  sunbelte_teams <- standings %>%
+    filter(conference == "Sun Belt - East") %>%
+    arrange(desc(conf_wins))  # Sort by conference wins
+  
+  tied_teams <- sunbelte_teams %>%
+    filter(conf_wins == max(conf_wins))
+  
+  if (nrow(tied_teams) == 1) {
+    sunbelte_champ_team1 <- tied_teams$team[1]
+    } else if (nrow(tied_teams) == 2) {
+      sunbelte_champ_team1 <- tiebreaker_2_teams(tied_teams$team[1], tied_teams$team[2], games1, standings)
+    } else if (nrow(tied_teams) == 3) {
+      sunbelte_champ_team1 <- tiebreaker_3_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3], games1, standings)
+    } else if (nrow(tied_teams) == 4) {
+      sunbelte_champ_team1 <- tiebreaker_4_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], games1, standings)
+    } else if (nrow(tied_teams) == 5) {
+      sunbelte_champ_team1 <- tiebreaker_5_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                               tied_teams$team[4], tied_teams$team[5], games1, standings)
+    } else if (nrow(tied_teams) == 6) {
+      sunbelte_champ_team1 <- tiebreaker_6_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                              tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], games1, standings)
+    } else if (nrow(tied_teams) == 7) {
+      sunbelte_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    } else if (nrow(tied_teams) > 7) {
+      sunbelte_champ_team1 <- tiebreaker_7_teams(tied_teams$team[1], tied_teams$team[2], tied_teams$team[3],
+                                                tied_teams$team[4], tied_teams$team[5], tied_teams$team[6], tied_teams$team[7], games1, standings)
+    }
+
+  score_west <- standings$resume_score2[standings$team == sunbeltw_champ_team1]
+  score_east <- standings$resume_score2[standings$team == sunbelte_champ_team1]
+
+  # Compare the scores and adjust the order of teams in simulate_game accordingly
+  if (score_west > score_east) {
+    sunbelt_champ_winner <- simulate_game(sunbeltw_champ_team1, sunbelte_champ_team1, 0)
+  } else {
+    sunbelt_champ_winner <- simulate_game(sunbelte_champ_team1, sunbeltw_champ_team1, 0)
+  }
+  
+  if (score_west > score_east) {
+    standings <- update_standings(sunbeltw_champ_team1, sunbelte_champ_team1, sunbelt_champ_winner, 0, standings)
+  } else {
+    standings <- update_standings(sunbelte_champ_team1, sunbeltw_champ_team1, sunbelt_champ_winner, 0, standings)
+  }
+  
+  standings <- standings %>%
+    mutate(
+      conf_winner = ifelse(team %in% c(acc_champ_winner, american_champ_winner, big12_champ_winner,
+                                        bigten_champ_winner, cusa_champ_winner, mac_champ_winner,
+                                        mountainwest_champ_winner, sec_champ_winner, sunbelt_champ_winner), 1, 0)
+    )
+  standings <- standings[order(-standings$conf_winner, -standings$resume_score2), ]
+  byes <- standings[1:4, ]
+  first_round <- standings[c(5, 10:16), ]
+  first_round <- first_round[order(-first_round$resume_score2), ]
+  playoffs <- rbind(byes, first_round)
+  playoffs$seed <- 1:nrow(playoffs)
+  
+  standings$playoff_berth <- ifelse(standings$team %in% playoffs$team, 1, 0)
+  standings$first_round_bye <- ifelse(standings$team %in% byes$team, 1, 0)
+  
+  team_1 <- playoffs$team[playoffs$seed == 1]
+  team_2 <- playoffs$team[playoffs$seed == 2]
+  team_3 <- playoffs$team[playoffs$seed == 3]
+  team_4 <- playoffs$team[playoffs$seed == 4]
+  team_5 <- playoffs$team[playoffs$seed == 5]
+  team_6 <- playoffs$team[playoffs$seed == 6]
+  team_7 <- playoffs$team[playoffs$seed == 7]
+  team_8 <- playoffs$team[playoffs$seed == 8]
+  team_9 <- playoffs$team[playoffs$seed == 9]
+  team_10 <- playoffs$team[playoffs$seed == 10]
+  team_11 <- playoffs$team[playoffs$seed == 11]
+  team_12 <- playoffs$team[playoffs$seed == 12]
+  
+  #Playoff Game 1: #12 @ #5
+  winner5_12 <- simulate_game(team_5, team_12, 0)
+  #Playoff Game 2: #9 @ #8
+  winner8_9 <- simulate_game(team_8, team_9, 0)
+  #Playoff Game 3: #11 @ #6
+  winner6_11 <- simulate_game(team_6, team_11, 0)
+  #Playoff Game 4: #10 @ #7
+  winner7_10 <- simulate_game(team_7, team_10, 0)
+  
+  #Quarters Game 1: #4 vs #5/12
+  quarters1 <- simulate_game(team_4, winner5_12, 1)
+  #Quarters Game 2: #1 vs #8/9
+  quarters2 <- simulate_game(team_1, winner8_9, 1)
+  #Quarters Game 3: #3 vs #6/11
+  quarters3 <- simulate_game(team_3, winner6_11, 1)
+  #Quarters Game 4: #2 vs #7/10
+  quarters4 <- simulate_game(team_2, winner7_10, 1)
+  
+  #Semis Game 1: #4/5/12 @ #1/8/9
+  semis1 <- simulate_game(quarters1, quarters2, 1)
+  #Semis Game 2: #3/6/11 @ #2/7/10
+  semis2 <- simulate_game(quarters3, quarters4, 1)
+  
+  #National Championship
+  national_champion <- simulate_game(semis1, semis2, 1)
+  
+  standings$champ_appearance <- ifelse(standings$team %in% c(semis1, semis2), 1, 0)
+  standings$national_champion <- ifelse(standings$team == national_champion, 1, 0)
+  
+  return(standings)
+}
+
+# Number of simulations
+num_simulations <- 100000
+
+# Run simulations and store results
+results <- replicate(num_simulations, simulate_season(games), simplify = FALSE)
+
+# Combine all results into one dataframe
+combined_results <- bind_rows(results, .id = "simulation")
+
+# Aggregate results to calculate average total and conference wins/losses
+final_standings <- combined_results %>%
+  group_by(team, conference) %>%
+  summarise(
+    avg_total_wins = mean(total_wins, na.rm = TRUE),
+    avg_total_losses = mean(total_losses, na.rm = TRUE),
+    avg_conf_wins = mean(conf_wins, na.rm = TRUE),
+    avg_conf_losses = mean(conf_losses, na.rm = TRUE),
+    avg_resume_score = mean(resume_score2, na.rm = TRUE),
+    conf_championships = sum(conf_winner, na.rm = TRUE),
+    playoff_berths = sum(playoff_berth, na.rm = TRUE),
+    first_round_byes = sum(first_round_bye, na.rm = TRUE),
+    champ_appearances = sum(champ_appearance, na.rm = TRUE),
+    national_championships = sum(national_champion, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  # Sort by conference first, then by conf_championships
+  arrange(conference, desc(conf_championships))
+```
+
+```{r}
+for (week in 1:14) {
+  assign(
+    paste0("week", week),
+    games %>%
+      filter(week == !!week) %>%
+      arrange(desc(ThrillScore)) %>%
+      head(25)
+  )
+}
+```
+
+```{r}
+setwd("~/Documents/SAL")
+team_info <- read_csv("download.csv")
+
+missing_team_info <- setdiff(final_standings$team, team_info$School)
+# Logos used for visualizations
+team_info$School[team_info$School == "Texas A&M"] <- "Texas AM"
+
+team_logos <- data.frame(
+  team = team_info$School,  # Team column with school names
+  logo_png = paste0("https://raw.githubusercontent.com/CFBD/cfb-web/refs/heads/master/public/logos/", team_info$Id, ".png"),
+  stringsAsFactors = FALSE
+)
+
+team_results <- data.frame(
+  team = final_standings$team,
+  wins = numeric(length(final_standings$team)),
+  losses = numeric(length(final_standings$team)),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each team in final_standings$team
+for (i in 1:length(final_standings$team)) {
+  team_name <- final_standings$team[i]
+  
+  # Filter the games where the team is the home or away team
+  team_games <- games %>%
+    filter((home_team_location == team_name | away_team_location == team_name) & 
+           !is.na(home_win) & !is.na(away_win))  # Exclude rows where home_win or away_win is NA
+  
+  # Calculate the number of wins
+  wins <- sum((team_games$home_team_location == team_name & team_games$home_win == 1) |
+              (team_games$away_team_location == team_name & team_games$away_win == 1))
+  
+  # Calculate the number of losses
+  losses <- sum((team_games$home_team_location == team_name & team_games$home_win == 0) |
+                (team_games$away_team_location == team_name & team_games$away_win == 0))
+  
+  # Store the wins and losses in the results dataframe
+  team_results$wins[i] <- wins
+  team_results$losses[i] <- losses
+}
+
+team_results <- team_results %>%
+  mutate(record = paste(.[[2]], "-", .[[3]])  # Concatenates columns 3 and 4
+  ) %>%
+  select(-2, -3)
+```
+
+```{r}
+cfb_proj <- final_standings %>%
+  select(1:4, 8:10, 12) %>%
+  mutate(
+    across(c(3, 4), round),              # Rounds columns 3 and 4 to the nearest integer
+    across(5:8, ~ round(. / 1000, 1))    # Divides columns 5 through 8 by 1000 and rounds to the nearest tenth
+  ) %>%
+  arrange(desc(playoff_berths)) %>%      # Orders the dataframe by descending playoff_berths
+  mutate(Rk = row_number()) %>%          # Adds a column "Rk" with increasing integers
+  mutate(
+    projected_record = paste(.[[3]], "-", .[[4]])  # Concatenates columns 3 and 4
+  ) %>%
+  left_join(sagarin %>% select(team, Rating), by = c("team" = "team")) %>%
+  select(-3, -4) %>%                     # Drops columns 3 and 4 after concatenation
+  left_join(team_results %>% select(team, record), by = c("team" = "team")) %>%
+  select(7, 1, 2, 9, 10, 8, 4, 3, 5, 6) %>%
+  slice(1:27)
+
+cfb_proj$team[cfb_proj$team == "Texas A&M"] <- "Texas AM"
+
+cfb_proj <- cfb_proj %>%
+  gt() %>%
+  tab_spanner(
+    label = "POSTSEASON ODDS",
+    columns = vars(playoff_berths, conf_championships, first_round_byes, national_championships)
+  ) %>% 
+  tab_header(
+    title = md(paste0("**2024 College Football Playoff Predictions - ", format(Sys.Date(), "%m/%d"), "**")),
+    subtitle = md("How teams stack up in the race for playoff bids, conference championships and staying on the right side of the bubble.")
+    ) %>% 
+  data_color(
+    columns = vars(playoff_berths),
+    colors = scales::col_numeric(
+      palette = c("white", "#3fc1c9"),
+      domain = NULL
+    )
+  ) %>%
+  text_transform(
+    locations = cells_body(columns = c(team)),
+    fn = function(x) {
+      sapply(x, function(team_name) {
+        logo_url <- team_logos %>%
+          filter(team == team_name) %>%
+          pull(logo_png)
+        sprintf('<img src="%s" height="69px" style="margin-right:15px"/> %s',
+                logo_url, team_name)
+      })
+    }
+  ) %>% 
+  cols_label(
+    Rk = "RK.",
+    team = "TEAM",
+    conference = "CONF.",
+    Rating = "SAGARIN RTG.",
+    record = "CURRENT RECORD",
+    projected_record = "PROJ. RECORD",
+    playoff_berths = "MAKE PLAYOFF (%)",
+    conf_championships = "WIN CONF. (%)",
+    first_round_byes = "1ST RD. BYE (%)",
+    national_championships = "WIN CHAMP. (%)"
+  ) %>% 
+  tab_source_note(
+    source_note = md("SOURCE: Jeff Sagarin's College Football Ratings <br>http://sagarin.com/sports/cfsend.htm <br>TABLE: @LukowskyNick")
+  ) %>%
+  gt_theme_538(table.width = px(750))
+
+cfb_proj
+```
+
+```{r}
+library(webshot)
+library(webshot2)
+setwd("~/Documents/SAL")
+gtsave(cfb_proj, filename = "cfb_proj_table_week12.png")
+```
+
